@@ -1,0 +1,16 @@
+{
+  "name": "canp-integracao",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": ["api", "web"],
+  "scripts": {
+    "dev": "node dev.mjs",
+    "dev:api": "npm --workspace api run dev",
+    "dev:web": "npm --workspace web run dev",
+    "build:api": "npm --workspace api run build",
+    "build:web": "npm --workspace web run build",
+    "lint:api": "npm --workspace api run lint",
+    "typecheck:api": "npm --workspace api run typecheck",
+    "test:api": "npm --workspace api run test"
+  }
+}
