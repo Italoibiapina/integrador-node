@@ -1,0 +1,3 @@
+1 - A rasgem funcinou porém quandi tem um item com o chip de tamanho , a rasoagem erra sobe o statsu dio pdeido ocrreu no peidod do dia 16/04/2026 prdido no: 2594
+
+2 - a Rapsagem ainda falat prever paginação quando houver, pata iss precisamos prepara para testar com dia especifico ( mud data na navegação).

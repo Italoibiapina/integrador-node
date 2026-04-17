@@ -14,6 +14,15 @@ function envOptionalNumber(name: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function envOptionalBoolean(name: string, fallback: boolean): boolean {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const v = raw.trim().toLowerCase();
+  if (v === '1' || v === 'true' || v === 'yes' || v === 'y') return true;
+  if (v === '0' || v === 'false' || v === 'no' || v === 'n') return false;
+  return fallback;
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== 'object' || value === null) return {};
   if (Array.isArray(value)) return {};
@@ -73,6 +82,18 @@ async function main() {
     const usernameField = optionalStringFromRecord(cfg, 'usernameField') ?? process.env.POWERSTOCK_USERNAME_FIELD ?? 'username';
     const passwordField = optionalStringFromRecord(cfg, 'passwordField') ?? process.env.POWERSTOCK_PASSWORD_FIELD ?? 'password';
     const tableSelector = optionalStringFromRecord(cfg, 'tableSelector') ?? envOptional('POWERSTOCK_TABLE_SELECTOR');
+    const operationDate =
+      optionalStringFromRecord(cfg, 'operationDate') ??
+      envOptional('POWERSTOCK_OPERATION_DATE') ??
+      envOptional('POWERSTOCK_DATE');
+    const operationDateStart =
+      optionalStringFromRecord(cfg, 'operationDateStart') ??
+      envOptional('POWERSTOCK_OPERATION_DATE_START') ??
+      envOptional('POWERSTOCK_DATE_START');
+    const operationDateEnd =
+      optionalStringFromRecord(cfg, 'operationDateEnd') ??
+      envOptional('POWERSTOCK_OPERATION_DATE_END') ??
+      envOptional('POWERSTOCK_DATE_END');
     const timeoutMs = optionalNumberFromRecord(cfg, 'timeoutMs') ?? envOptionalNumber('POWERSTOCK_TIMEOUT_MS', 15000);
     const maxPages = optionalNumberFromRecord(cfg, 'maxPages') ?? envOptionalNumber('POWERSTOCK_MAX_PAGES', 1);
 
@@ -85,15 +106,18 @@ async function main() {
       passwordField,
       ordersUrl,
       tableSelector,
+      operationDate,
+      operationDateStart,
+      operationDateEnd,
       timeoutMs,
       maxPages,
       runMode: 'browser',
       headless: false,
-      slowMoMs: envOptionalNumber('POWERSTOCK_SLOWMO_MS', 50),
-      keepBrowserOpen: process.env.POWERSTOCK_KEEP_OPEN === '1' || process.env.POWERSTOCK_KEEP_OPEN === 'true',
+      slowMoMs: envOptionalNumber('POWERSTOCK_SLOWMO_MS', 1000),
+      keepBrowserOpen: envOptionalBoolean('POWERSTOCK_KEEP_OPEN', true),
     });
 
-    process.stdout.write(JSON.stringify({ ok: true, total: collected.length, sample: collected.slice(0, 3) }, null, 2));
+    process.stdout.write(JSON.stringify({ ok: true, total: collected.length, items: collected }, null, 2));
     process.stdout.write('\n');
   } finally {
     await db.end().catch(() => undefined);
