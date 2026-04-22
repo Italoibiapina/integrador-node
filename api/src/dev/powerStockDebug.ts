@@ -95,7 +95,6 @@ async function main() {
       envOptional('POWERSTOCK_OPERATION_DATE_END') ??
       envOptional('POWERSTOCK_DATE_END');
     const timeoutMs = optionalNumberFromRecord(cfg, 'timeoutMs') ?? envOptionalNumber('POWERSTOCK_TIMEOUT_MS', 15000);
-    const maxPages = optionalNumberFromRecord(cfg, 'maxPages') ?? envOptionalNumber('POWERSTOCK_MAX_PAGES', 1);
 
     const collected = await fetchPowerStockOrders({
       baseUrl,
@@ -110,7 +109,6 @@ async function main() {
       operationDateStart,
       operationDateEnd,
       timeoutMs,
-      maxPages,
       runMode: 'browser',
       headless: false,
       slowMoMs: envOptionalNumber('POWERSTOCK_SLOWMO_MS', 1000),

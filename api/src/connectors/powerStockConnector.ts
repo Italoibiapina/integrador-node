@@ -13,7 +13,7 @@ export type PowerStockConnectionConfig = {
   operationDateStart?: string;
   operationDateEnd?: string;
   timeoutMs: number;
-  maxPages: number;
+  maxPages?: number;
   runMode?: 'http' | 'browser';
   headless?: boolean;
   slowMoMs?: number;
@@ -355,31 +355,6 @@ async function waitForLoadStateBestEffort(page: Page, state: WaitUntil, timeoutM
   return ok;
 }
 
-async function waitForUrlBestEffort(page: Page, urlOrPredicate: string | RegExp, timeoutMs: number): Promise<boolean> {
-  const t = Math.max(0, timeoutMs);
-  const ok = await Promise.race([
-    page
-      .waitForURL(urlOrPredicate, { timeout: t })
-      .then(() => true)
-      .catch(() => false),
-    sleep(t).then(() => false),
-  ]);
-  return ok;
-}
-
-async function goBackBestEffort(page: Page, timeoutMs: number): Promise<boolean> {
-  const maybe = page as unknown as {
-    goBack?: (opts?: { waitUntil?: WaitUntil; timeout?: number }) => Promise<unknown>;
-  };
-  if (!maybe.goBack) return false;
-  const t = Math.max(0, timeoutMs);
-  const ok = await maybe
-    .goBack({ waitUntil: 'domcontentloaded', timeout: t })
-    .then(() => true)
-    .catch(() => false);
-  return ok;
-}
-
 async function tryClickFirst(page: Page, selectors: string[]): Promise<boolean> {
   for (const selector of selectors) {
     const loc = page.locator(selector).first();
@@ -424,7 +399,11 @@ async function tryClickFirstEnabled(page: Page, selectors: string[]): Promise<bo
 }
 
 function extractActivePageFromHtml(html: string): number | undefined {
-  const m = html.match(/<button[^>]*data-active[^>]*>\s*(\d+)\s*<\/button>/i);
+  const m =
+    html.match(/<button[^>]*data-active(?:\s*=\s*["']?true["']?)?[^>]*>\s*(\d+)\s*<\/button>/i) ??
+    html.match(/<button[^>]*aria-current\s*=\s*["']page["'][^>]*>\s*(\d+)\s*<\/button>/i) ??
+    html.match(/<button[^>]*aria-current\s*=\s*["']true["'][^>]*>\s*(\d+)\s*<\/button>/i) ??
+    html.match(/<[^>]+aria-current\s*=\s*["']page["'][^>]*>\s*(\d+)\s*<\/[^>]+>/i);
   if (!m?.[1]) return undefined;
   const n = Number(m[1]);
   return Number.isFinite(n) ? n : undefined;
@@ -445,46 +424,84 @@ function computeOrdersSignature(orders: Record<string, unknown>[]): string {
   return `${orders.length}:${firstSig}:${lastSig}`;
 }
 
-async function waitForOrdersDifferentFromSignature(
-  page: Page,
-  tableSelector: string | undefined,
-  previousSignature: string,
-  timeoutMs: number
-): Promise<Record<string, unknown>[] | undefined> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const html = await page.content();
-    const orders = parsePowerStockOrdersFromHtml(html, tableSelector);
-    if (orders.length) {
-      const active = extractActivePageFromHtml(html) ?? 0;
-      const sig = `${String(active)}:${computeOrdersSignature(orders)}`;
-      if (sig !== previousSignature) return orders;
-    }
-    await sleep(250);
-  }
-  return undefined;
-}
+async function goToNextOperationsListPage(page: Page, timeoutMs: number, nextPageNumber?: number): Promise<boolean> {
 
-async function goToNextOperationsListPage(page: Page, timeoutMs: number): Promise<boolean> {
+  console.log(` ======================> goToNextOperationsListPage step 1 `);
   const htmlBefore = await page.content();
+
+  console.log(` ======================> ANTES do extractActivePageFromHtml PROXIMA PAGINA `);
+
   const activeBefore = extractActivePageFromHtml(htmlBefore);
 
+  console.log(` ======================> DEPOIS do extractActivePageFromHtml PROXIMA PAGINA `);
+
+  const targetPage = nextPageNumber ?? (activeBefore ? activeBefore + 1 : undefined);
+
   const clicked = await tryClickFirstEnabled(page, [
+    ...(targetPage
+      ? [
+          `div:has(button:has-text("Início")):has(button:has-text("Última")) button:text-is("${String(targetPage)}")`,
+          `div:has(button:has-text("Início")):has(button:has-text("Última")) button:has-text("${String(targetPage)}")`,
+          `div[class*="chakra-stack"]:has(button:has-text("Início")):has(button:has-text("Última")) button:text-is("${String(targetPage)}")`,
+          `div[class*="chakra-stack"]:has(button:has-text("Início")):has(button:has-text("Última")) button:has-text("${String(targetPage)}")`,
+          `div:has(button[data-active]) button:text-is("${String(targetPage)}")`,
+          `div:has(button[aria-current="page"]) button:text-is("${String(targetPage)}")`,
+          `ul:has(button[data-active]) button:text-is("${String(targetPage)}")`,
+          `ul:has(button[aria-current="page"]) button:text-is("${String(targetPage)}")`,
+        ]
+      : []),
     'button[data-active] + button',
-    'div:has(button[data-active]) button:has-text("»")',
-    'button:has-text("»")',
+    'button[aria-current="page"] + button',
   ]);
+
+  console.log(` ======================> goToNextOperationsListPage step 2 `);
   if (!clicked) return false;
+  console.log(` ======================> goToNextOperationsListPage step 3 `);
+
+  await Promise.race([waitForLoadStateBestEffort(page, 'networkidle', Math.min(timeoutMs, 8000)), sleep(400)]);
+
+  console.log(` ======================> goToNextOperationsListPage step 4 `);
 
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const htmlNow = await page.content();
     const activeNow = extractActivePageFromHtml(htmlNow);
+    if (targetPage && activeNow === targetPage) return true;
     if (activeBefore && activeNow && activeNow !== activeBefore) return true;
-    if (!activeBefore && htmlNow !== htmlBefore) return true;
+    if (htmlNow !== htmlBefore && (!activeBefore || !activeNow)) return true;
     await sleep(250);
   }
-  return true;
+  console.log(` ======================> goToNextOperationsListPage step 5 `);
+  return false;
+}
+
+async function goToOperationsListPageNumber(page: Page, timeoutMs: number, pageNumber: number): Promise<boolean> {
+  if (!Number.isFinite(pageNumber) || pageNumber <= 0) return false;
+  const htmlBefore = await page.content();
+  const activeBefore = extractActivePageFromHtml(htmlBefore);
+  if (activeBefore === pageNumber) return true;
+
+  const clicked = await tryClickFirstEnabled(page, [
+    `div:has(button:has-text("Início")):has(button:has-text("Última")) button:text-is("${String(pageNumber)}"):visible`,
+    `div:has(button:has-text("Início")):has(button:has-text("Última")) button:has-text("${String(pageNumber)}"):visible`,
+    `div[class*="chakra-stack"]:has(button:has-text("Início")):has(button:has-text("Última")) button:text-is("${String(pageNumber)}"):visible`,
+    `div[class*="chakra-stack"]:has(button:has-text("Início")):has(button:has-text("Última")) button:has-text("${String(pageNumber)}"):visible`,
+    `div:has(button[data-active]) button:text-is("${String(pageNumber)}"):visible`,
+    `button:text-is("${String(pageNumber)}"):visible`,
+  ]);
+  if (!clicked) return false;
+
+  await Promise.race([waitForLoadStateBestEffort(page, 'networkidle', Math.min(timeoutMs, 8000)), sleep(400)]);
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const htmlNow = await page.content();
+    const activeNow = extractActivePageFromHtml(htmlNow);
+    if (activeNow === pageNumber) return true;
+    if (htmlNow !== htmlBefore && (!activeBefore || !activeNow)) return true;
+    await sleep(250);
+  }
+  return false;
 }
 
 async function waitForDetailsLoaded(page: Page, timeoutMs: number): Promise<boolean> {
@@ -569,83 +586,54 @@ async function openDetailsForIndex(page: Page, index: number, timeoutMs: number)
   return false;
 }
 
-async function closeDetailsToReturnToList(page: Page, _tableSelector: string, timeoutMs: number): Promise<void> {
-  const alreadyOnList = await waitForAnySelector(
-    page,
-    [
-      '#menu-button-mostrarMais',
-      'button#menu-button-mostrarMais',
-      '[id="menu-button-mostrarMais"]',
-      '#select-container-undefined',
-      '#select-container-undefined [role="combobox"]',
-      '#select-container-undefined input',
-    ],
-    250
-  );
-  if (alreadyOnList) return;
+async function closeDetailsToReturnToList(
+  page: Page,
+  tableSelector: string,
+  timeoutMs: number,
+  desiredListPageNumber?: number
+): Promise<void> {
 
-  const wentBack = await goBackBestEffort(page, Math.min(6000, timeoutMs));
-  if (wentBack) {
-    const listReady = await waitForAnySelector(
-      page,
-      [
-        'text=Operações',
-        '#select-container-undefined',
-        '#select-container-undefined [role="combobox"]',
-        '#select-container-undefined input',
-        '[role="combobox"]',
-        '[aria-haspopup="listbox"]',
-        '#menu-button-mostrarMais',
-        'button#menu-button-mostrarMais',
-        '[id="menu-button-mostrarMais"]',
-      ],
-      timeoutMs
-    );
-    if (listReady) return;
-  }
+console.log('**************************************> closeDetailsToReturnToList 1');
+
+  const isDetailsHtml = (html: string): boolean =>
+    /Itens do pedido/i.test(html) ||
+    /Itens do Pedido/i.test(html) ||
+    (/Endere[cç]o/i.test(html) && /Telefone/i.test(html)) ||
+    /polyline[^>]+points="15 18 9 12 15 6"/i.test(html);
+
+  const htmlNow = await page.content();
+  const isDetails = isDetailsHtml(htmlNow);
+
+  if (!isDetails) return;
+  console.log('**************************************> closeDetailsToReturnToList 2 - isDetails:', isDetails);
 
   const clicked = await tryClickFirst(page, [
-    'button:has(svg.chakra-icon polyline[points="15 18 9 12 15 6"])',
-    'button:has(svg[class*="chakra-icon"] polyline[points="15 18 9 12 15 6"])',
-    'button:has(polyline[points="15 18 9 12 15 6"])',
-    'a:has(svg.chakra-icon polyline[points="15 18 9 12 15 6"])',
-    'a:has(svg[class*="chakra-icon"] polyline[points="15 18 9 12 15 6"])',
-    'a:has(polyline[points="15 18 9 12 15 6"])',
-    'a:has-text("Operações")',
-    'a[href*="/operacoes"]',
-    'a[href*="operacoes"]',
-    'button[aria-label*="voltar" i]',
-    'a[aria-label*="voltar" i]',
-    'button:has-text("Voltar")',
-    'a:has-text("Voltar")',
+    'svg:has(polyline[points="15 18 9 12 15 6"]):visible',
+    'xpath=//*[name()="svg" and .//*[name()="polyline" and normalize-space(@points)="15 18 9 12 15 6"]]',
+    'xpath=//*[name()="polyline" and normalize-space(@points)="15 18 9 12 15 6"]',
   ]);
 
-  if (clicked) {
-    await Promise.race([
-      waitForUrlBestEffort(page, /\/operacoes/i, Math.min(8000, timeoutMs)),
-      waitForLoadStateBestEffort(page, 'load', Math.min(5000, timeoutMs)),
-      sleep(250),
-    ]);
+  console.log('**************************************> closeDetailsToReturnToList 5 - clicked: ',clicked);
 
-    const listReady = await waitForAnySelector(
-      page,
-      [
-        'text=Operações',
-        '#select-container-undefined',
-        '#select-container-undefined [role="combobox"]',
-        '#select-container-undefined input',
-        '[role="combobox"]',
-        '[aria-haspopup="listbox"]',
-        '#menu-button-mostrarMais',
-        'button#menu-button-mostrarMais',
-        '[id="menu-button-mostrarMais"]',
-      ],
-      timeoutMs
-    );
-    if (listReady) return;
+  if (!clicked) throw new Error('PowerStock (browser): não consegui clicar no SVG de voltar na tela de detalhes.');
+
+  await Promise.race([waitForLoadStateBestEffort(page, 'domcontentloaded', Math.min(5000, timeoutMs)), sleep(250)]);
+  await sleep(500);
+
+  const htmlAfterClick = await page.content();
+  const stillDetails = isDetailsHtml(htmlAfterClick);
+  console.log('**************************************> closeDetailsToReturnToList after svg click -> stillDetails:', stillDetails);
+  if (stillDetails) {
+    throw new Error('PowerStock (browser): cliquei no SVG de voltar, mas a tela de detalhes não fechou.');
   }
 
-  throw new Error('PowerStock (browser): não consegui voltar da tela de detalhes para a lista.');
+  if (desiredListPageNumber && desiredListPageNumber > 1) {
+    const ensured = await goToOperationsListPageNumber(page, timeoutMs, desiredListPageNumber);
+    if (!ensured) throw new Error(`PowerStock (browser): voltei do detalhe, mas não consegui retornar para a página ${desiredListPageNumber}.`);
+  }
+
+  await waitForTable(page, tableSelector, timeoutMs);
+  return;
 }
 
 async function waitForText(page: Page, needle: string, timeoutMs: number): Promise<boolean> {
@@ -1255,37 +1243,39 @@ async function fetchPowerStockOrdersViaBrowser(config: PowerStockConnectionConfi
 
     const out: Record<string, unknown>[] = [];
     const tableSelector = config.tableSelector ?? 'table';
-    let previousSignature: string | undefined;
+    const pageTransitionTimeoutMs = Math.min(45000, Math.max(15000, config.timeoutMs));
+    const seenSignatures = new Set<string>();
 
-    for (let pageCount = 0; pageCount < Math.max(1, config.maxPages); pageCount += 1) {
+
+    for (let pageCount = 0; pageCount < 9999; pageCount += 1) {
+      console.log(` ======================> Processa pagina:`, pageCount);
       const ok = await waitForTable(page, tableSelector, config.timeoutMs);
       if (!ok) break;
+      
+      //console.log(` ======================> Processa pagina 2:`, pageCount);
+      
+      const listHtml = await page.content();
+      const pageOrders = parsePowerStockOrdersFromHtml(listHtml, config.tableSelector);
 
-      let pageOrders: Record<string, unknown>[];
-      if (previousSignature) {
-        const changed = await waitForOrdersDifferentFromSignature(
-          page,
-          config.tableSelector,
-          previousSignature,
-          Math.min(15000, Math.max(2000, config.timeoutMs))
-        );
-        if (!changed) break;
-        pageOrders = changed;
-      } else {
-        const listHtml = await page.content();
-        pageOrders = parsePowerStockOrdersFromHtml(listHtml, config.tableSelector);
-      }
+      //console.log(` ======================> Processa pagina 3:`, pageOrders.length);
 
       if (pageOrders.length === 0) break;
 
-      const htmlForSig = await page.content();
-      const activeForSig = extractActivePageFromHtml(htmlForSig) ?? 0;
+      const activeForSig = extractActivePageFromHtml(listHtml) ?? 0;
       const currentSignature = `${String(activeForSig)}:${computeOrdersSignature(pageOrders)}`;
+
+      if (seenSignatures.has(currentSignature)) break;
+
+      //console.log(` ======================> Processa pagina 4:`, pageCount);
 
       const detailsButtonsCount = await page.locator('#menu-button-mostrarMais').count();
       const limit = Math.min(detailsButtonsCount || pageOrders.length, pageOrders.length);
 
+      //console.log(` ======================> Processa pagina 5:`, limit);
+
+      /** Ler detalehs da lista de pedidos */
       for (let idx = 0; idx < limit; idx += 1) {
+        console.log(` ======================> Processa ITENS pagina 6:`, idx, "/", limit );
         const opened = await openDetailsForIndex(page, idx, config.timeoutMs);
         if (!opened) continue;
 
@@ -1294,14 +1284,25 @@ async function fetchPowerStockOrdersViaBrowser(config: PowerStockConnectionConfi
         const items = parsePowerStockOrderItemsFromHtml(detailsHtml);
         pageOrders[idx] = { ...pageOrders[idx], cliente, items };
 
-        await closeDetailsToReturnToList(page, tableSelector, config.timeoutMs);
+        await closeDetailsToReturnToList(page, tableSelector, config.timeoutMs, activeForSig);
+        
+        await sleep(3000);
+        
       }
 
-      out.push(...pageOrders);
-      previousSignature = currentSignature;
 
-      const advanced = await goToNextOperationsListPage(page, Math.min(15000, Math.max(2000, config.timeoutMs)));
+      out.push(...pageOrders);
+      seenSignatures.add(currentSignature);
+
+      //console.log(` ======================> Processa pagina 7:`, pageOrders.length);
+
+      //console.log(` #################################> antes de chamar o goToNextOperationsListPage => pageCount=${pageCount} currentSignature=${currentSignature}`);
+      const nextPageNumber = activeForSig > 0 ? activeForSig + 1 : undefined;
+      const advanced = await goToNextOperationsListPage(page, pageTransitionTimeoutMs, nextPageNumber);
       if (!advanced) break;
+      await sleep(5000);
+
+      //console.log(` #################################>  depois de chamar o goToNextOperationsListPage => pageCount=${pageCount} currentSignature=${currentSignature}`);
     }
 
     return out;
@@ -1343,12 +1344,13 @@ export async function fetchPowerStockOrders(config: PowerStockConnectionConfig):
   }
 
   const out: Record<string, unknown>[] = [];
+  const seenSignatures = new Set<string>();
 
-  for (let pageCount = 0; pageCount < config.maxPages; pageCount += 1) {
+  for (let pageCount = 0; pageCount < 9999; pageCount += 1) {
     const pageNumber = pageCount + 1;
     const endpoint = config.ordersUrl.includes('{page}') ? config.ordersUrl.replaceAll('{page}', String(pageNumber)) : config.ordersUrl;
     const ordersUrl = buildUrl(config.baseUrl, endpoint);
-    if (!config.ordersUrl.includes('{page}') && config.maxPages > 1) {
+    if (!config.ordersUrl.includes('{page}')) {
       ordersUrl.searchParams.set('page', String(pageNumber));
     }
 
@@ -1363,6 +1365,9 @@ export async function fetchPowerStockOrders(config: PowerStockConnectionConfig):
 
     const items = parsePowerStockOrdersFromHtml(html, config.tableSelector);
     if (items.length === 0) break;
+    const sig = computeOrdersSignature(items);
+    if (seenSignatures.has(sig)) break;
+    seenSignatures.add(sig);
     out.push(...items);
   }
 

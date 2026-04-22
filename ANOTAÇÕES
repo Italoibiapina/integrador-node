@@ -1,2 +1,5 @@
 USUARIOS/EMAIL : admin@local
 SENHA: change-me
+
+// Rodar Debug Webscraping
+node .\powerstock-debug.mjs
