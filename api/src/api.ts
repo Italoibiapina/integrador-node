@@ -9,6 +9,7 @@ import { advisoryLockKey, createDb } from './db.js';
 import { env } from './env.js';
 import { runMigrations } from './migrate.js';
 import { queueNames, type ExecutionStatus, type ExecutionTrigger, type QueueName } from './types.js';
+import { apiIntegrationRoutes } from './apiIntegrationRoutes.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -81,6 +82,7 @@ const boss = await startBoss(env.databaseUrl, [
 const app = Fastify({ logger: true });
 
 await app.register(cookie);
+await app.register(apiIntegrationRoutes, { prefix: '/api-integration' });
 
 function isAllowedCorsOrigin(origin: string): boolean {
   if (
@@ -138,7 +140,7 @@ function clearAuthCookie(reply: FastifyReply) {
   reply.clearCookie(env.authCookieName, { path: '/' });
 }
 
-async function authRequired(request: FastifyRequest, reply: FastifyReply) {
+export async function authRequired(request: FastifyRequest, reply: FastifyReply) {
   const token = request.cookies[env.authCookieName];
   if (!token) {
     reply.code(401).send({ error: 'Unauthorized' });

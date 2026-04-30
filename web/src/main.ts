@@ -9,6 +9,9 @@ import { renderConnectionsPage } from './pages/connections';
 import { renderSchedulesPage } from './pages/schedules';
 import { renderIntegrationsPage } from './pages/integrations';
 import { renderCustomConnectionsPage } from './pages/custom-connections';
+import { renderApiAuthConfigsPage } from './pages/api-auth-configs';
+import { renderApiServicesPage } from './pages/api-services';
+import { renderServiceExecutionLogsPage } from './pages/service-execution-logs';
 
 const apiBase = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:3005';
 
@@ -32,14 +35,32 @@ app.innerHTML = `
       <div class="pill" style="margin-top: 8px;">Auth: <strong id="authStatus">desconhecido</strong></div>
       <div class="divider"></div>
       <nav id="nav">
-        <a href="#/dashboard" data-path="/dashboard">Dashboard</a>
-        <a href="#/integrations" data-path="/integrations">Integrações</a>
-        <a href="#/schedules" data-path="/schedules">Agendamentos</a>
-        <a href="#/manual-run" data-path="/manual-run">Disparo Manual</a>
-        <a href="#/executions" data-path="/executions">Execuções</a>
-        <a href="#/connections" data-path="/connections">Conexões</a>
-        <a href="#/custom-connections" data-path="/custom-connections">Conexões Customizadas</a>
-        <a href="#/notifiers" data-path="/notifiers">Notificadores</a>
+        <div class="nav-group">
+          <div class="nav-group-title">Execução Serviços</div>
+          <a href="#/service-execution-logs" data-path="/service-execution-logs">Logs de Execução</a>
+        </div>
+
+        <div class="nav-group">
+          <div class="nav-group-title">Master Data</div>
+          <a href="#/api-auth-configs" data-path="/api-auth-configs">Api Auth Config</a>
+          <a href="#/api-services" data-path="/api-services">Api Services</a>
+        </div>
+
+        <div class="nav-group">
+          <div class="nav-group-title">Geral</div>
+          <a href="#/dashboard" data-path="/dashboard">Dashboard</a>
+          <a href="#/integrations" data-path="/integrations">Integrações</a>
+          <a href="#/schedules" data-path="/schedules">Agendamentos</a>
+          <a href="#/manual-run" data-path="/manual-run">Disparo Manual</a>
+          <a href="#/executions" data-path="/executions">Execuções</a>
+        </div>
+
+        <div class="nav-group">
+          <div class="nav-group-title">Configurações</div>
+          <a href="#/connections" data-path="/connections">Conexões</a>
+          <a href="#/custom-connections" data-path="/custom-connections">Conexões Customizadas</a>
+          <a href="#/notifiers" data-path="/notifiers">Notificadores</a>
+        </div>
       </nav>
       <div class="footer">
         <button id="btnLogout">Sair</button>
@@ -170,6 +191,21 @@ async function render() {
 
   if (path === '/notifiers') {
     viewEl.appendChild(renderNotifiersPage({ api }));
+    return;
+  }
+
+  if (path === '/api-auth-configs') {
+    viewEl.appendChild(renderApiAuthConfigsPage({ api }));
+    return;
+  }
+
+  if (path === '/api-services') {
+    viewEl.appendChild(renderApiServicesPage({ api }));
+    return;
+  }
+
+  if (path === '/service-execution-logs') {
+    viewEl.appendChild(renderServiceExecutionLogsPage({ api }));
     return;
   }
 

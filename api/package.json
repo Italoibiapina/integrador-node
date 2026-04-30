@@ -11,6 +11,7 @@
     "dev:worker": "tsx watch src/worker.ts",
     "dev:all": "tsx watch dev.ts",
     "debug:powerstock": "tsx src/dev/powerStockDebug.ts",
+    "run:api-service": "tsx src/dev/runApiService.ts",
     "build": "tsc -p tsconfig.json",
     "start:api": "node dist/api.js",
     "start:worker": "node dist/worker.js",

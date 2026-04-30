@@ -1,0 +1,292 @@
+import { ApiBatch } from '../../../api/src/services/apiIntegrationTypes';
+
+export type ServiceExecutionLogsPageDeps = {
+  api: <T = unknown>(path: string, init?: RequestInit) => Promise<T>;
+};
+
+export function renderServiceExecutionLogsPage(deps: ServiceExecutionLogsPageDeps): HTMLElement {
+  const root = document.createElement('div');
+  root.className = 'content';
+  let availableServices: Array<{ id: string; name: string }> = [];
+
+  root.innerHTML = `
+    <h1>Logs de Execução de Serviços</h1>
+    <p class="muted">Consulte o histórico de execuções e detalhes de cada lote.</p>
+
+    <div class="card" style="margin-bottom: 20px;">
+      <div class="row">
+        <label>
+          Serviço
+          <select id="filterService">
+            <option value="">Todos os Serviços</option>
+          </select>
+        </label>
+        <label>
+          Data Início
+          <input type="date" id="filterDateStart" />
+        </label>
+        <label>
+          Data Fim
+          <input type="date" id="filterDateEnd" />
+        </label>
+        <div style="display: flex; align-items: flex-end;">
+          <button id="btnFilter">Filtrar</button>
+        </div>
+        <div style="display: flex; align-items: flex-end;">
+          <button id="btnNewExecution">Nova Execução</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2 style="font-size: 16px; margin-bottom: 12px;">Últimas Execuções</h2>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Data/Hora</th>
+              <th>Serviço</th>
+              <th>Status</th>
+              <th>Ações</th>
+            </tr>
+          </thead>
+          <tbody id="batchRows"></tbody>
+        </table>
+      </div>
+
+      <div id="detailSection" class="card" style="display: none;">
+        <h2 style="font-size: 16px; margin-bottom: 12px;">Detalhes da Execução</h2>
+        <div id="batchDetail"></div>
+        
+        <h3 style="font-size: 14px; margin-top: 20px; margin-bottom: 10px;">Sub-etapas (Endpoints)</h3>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Início</th>
+              <th>Status</th>
+              <th>Duração</th>
+              <th>Ações</th>
+            </tr>
+          </thead>
+          <tbody id="executionRows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Modal para ver JSON bruto -->
+    <div id="jsonModal" class="modal-backdrop" style="display:none;">
+      <div class="modal">
+        <div class="modal-header">
+          <h2 style="margin: 0; font-size: 16px;">Resposta Bruta (JSON)</h2>
+          <button id="btnCloseJsonModal" class="modal-close">Fechar</button>
+        </div>
+        <div class="divider"></div>
+        <pre id="jsonContent"></pre>
+      </div>
+    </div>
+
+    <div id="newExecutionModal" class="modal-backdrop" style="display:none;">
+      <div class="modal">
+        <div class="modal-header">
+          <h2 style="margin: 0; font-size: 16px;">Nova Execução</h2>
+          <button id="btnCloseNewExecutionModal" class="modal-close">Fechar</button>
+        </div>
+        <div class="divider"></div>
+        <div class="row">
+          <label>
+            Serviço
+            <select id="newExecutionService">
+              <option value="">Selecione um serviço</option>
+            </select>
+          </label>
+        </div>
+        <div class="actions" style="margin-top: 16px;">
+          <button id="btnExecuteService">Executar</button>
+          <button id="btnCancelNewExecution" type="button">Cancelar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const batchRowsEl = root.querySelector<HTMLTableSectionElement>('#batchRows')!;
+  const executionRowsEl = root.querySelector<HTMLTableSectionElement>('#executionRows')!;
+  const batchDetailEl = root.querySelector<HTMLDivElement>('#batchDetail')!;
+  const detailSection = root.querySelector<HTMLDivElement>('#detailSection')!;
+  const filterServiceSel = root.querySelector<HTMLSelectElement>('#filterService')!;
+  const filterDateStart = root.querySelector<HTMLInputElement>('#filterDateStart')!;
+  const filterDateEnd = root.querySelector<HTMLInputElement>('#filterDateEnd')!;
+  const jsonModal = root.querySelector<HTMLDivElement>('#jsonModal')!;
+  const jsonContent = root.querySelector<HTMLPreElement>('#jsonContent')!;
+  const newExecutionModal = root.querySelector<HTMLDivElement>('#newExecutionModal')!;
+  const newExecutionServiceSel = root.querySelector<HTMLSelectElement>('#newExecutionService')!;
+
+  async function loadServices() {
+    try {
+      const services = await deps.api<any[]>('/api-integration/services');
+      availableServices = services.map((s) => ({ id: s.id, name: s.name }));
+      filterServiceSel.innerHTML = '<option value="">Todos os Serviços</option>' + 
+        services.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+      newExecutionServiceSel.innerHTML = '<option value="">Selecione um serviço</option>' +
+        availableServices.map((s) => `<option value="${s.id}">${s.name}</option>`).join('');
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  async function loadBatches() {
+    try {
+      const serviceId = filterServiceSel.value;
+      const start = filterDateStart.value;
+      const end = filterDateEnd.value;
+      
+      let url = '/api-integration/batches?limit=20';
+      if (serviceId) url += `&serviceId=${serviceId}`;
+      if (start) url += `&start=${start}`;
+      if (end) url += `&end=${end}`;
+
+      const batches = await deps.api<ApiBatch[]>(url);
+      renderBatchRows(batches);
+    } catch (err) {
+      console.error(err);
+      alert('Erro ao carregar lotes.');
+    }
+  }
+
+  function renderBatchRows(batches: ApiBatch[]) {
+    batchRowsEl.innerHTML = batches.map(b => `
+      <tr>
+        <td>${new Date(b.started_at).toLocaleString()}</td>
+        <td>${b.snapshot_config?.service?.name || 'Serviço'}</td>
+        <td>
+          <span class="pill" style="color: ${b.status === 'success' ? '#52c41a' : b.status === 'error' ? '#ff4d4f' : '#faad14'}">
+            ${b.status}
+          </span>
+        </td>
+        <td>
+          <button class="btnViewDetail" data-id="${b.id}">Ver Detalhes</button>
+        </td>
+      </tr>
+    `).join('');
+
+    batchRowsEl.querySelectorAll('.btnViewDetail').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = (btn as HTMLElement).dataset.id;
+        void loadBatchDetail(id!);
+      });
+    });
+  }
+
+  async function loadBatchDetail(batchId: string) {
+    try {
+      const batch = await deps.api<ApiBatch>(`/api-integration/batches/${batchId}`);
+      const executions = await deps.api<any[]>(`/api-integration/executions?batchId=${batchId}`);
+      
+      detailSection.style.display = 'block';
+      
+      batchDetailEl.innerHTML = `
+        <div style="font-size: 13px;">
+          <p><strong>ID:</strong> ${batch.id}</p>
+          <p><strong>Duração:</strong> ${batch.finished_at ? Math.round((new Date(batch.finished_at).getTime() - new Date(batch.started_at).getTime()) / 1000) + 's' : 'Em andamento'}</p>
+          ${batch.error_message ? `<p style="color: #ff4d4f;"><strong>Erro:</strong> ${batch.error_message}</p>` : ''}
+          <button id="btnViewBatchRaw" class="pill">Ver JSON Bruto do Lote</button>
+        </div>
+      `;
+
+      root.querySelector('#btnViewBatchRaw')?.addEventListener('click', () => {
+        showJson(batch.raw_response);
+      });
+
+      executionRowsEl.innerHTML = executions.map(ex => {
+        const duration = ex.finished_at 
+          ? Math.round((new Date(ex.finished_at).getTime() - new Date(ex.started_at).getTime()) / 1000) + 's'
+          : '-';
+        return `
+          <tr>
+            <td>${new Date(ex.started_at).toLocaleString()}</td>
+            <td>
+              <span class="pill" style="color: ${ex.status === 'success' ? '#52c41a' : ex.status === 'error' ? '#ff4d4f' : '#faad14'}">
+                ${ex.status}
+              </span>
+            </td>
+            <td>${duration}</td>
+            <td>
+              <button class="btnViewExRaw" data-idx="${executions.indexOf(ex)}">Ver JSON</button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      executionRowsEl.querySelectorAll('.btnViewExRaw').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const idx = parseInt((btn as HTMLElement).dataset.idx!);
+          showJson(executions[idx].raw_response);
+        });
+      });
+
+    } catch (err) {
+      console.error(err);
+      alert('Erro ao carregar detalhes.');
+    }
+  }
+
+  function showJson(data: any) {
+    jsonContent.textContent = JSON.stringify(data, null, 2);
+    jsonModal.style.display = 'flex';
+  }
+
+  function openNewExecutionModal() {
+    newExecutionServiceSel.value = '';
+    newExecutionModal.style.display = 'flex';
+  }
+
+  function closeNewExecutionModal() {
+    newExecutionModal.style.display = 'none';
+  }
+
+  function getApiErrorMessage(err: unknown, fallback: string): string {
+    if (!err || typeof err !== 'object') return fallback;
+    const data = err as { status?: number; body?: unknown };
+    const body = data.body;
+    if (typeof body === 'string' && body.trim()) return body;
+    if (body && typeof body === 'object') {
+      const bodyObj = body as { error?: unknown; message?: unknown };
+      if (typeof bodyObj.error === 'string' && bodyObj.error.trim()) return bodyObj.error;
+      if (typeof bodyObj.message === 'string' && bodyObj.message.trim()) return bodyObj.message;
+    }
+    return fallback;
+  }
+
+  async function executeSelectedService() {
+    const serviceId = newExecutionServiceSel.value;
+    if (!serviceId) {
+      alert('Selecione um serviço para executar.');
+      return;
+    }
+    try {
+      await deps.api(`/api-integration/services/${serviceId}/execute`, { method: 'POST' });
+      closeNewExecutionModal();
+      alert('Execução iniciada com sucesso.');
+      await loadBatches();
+    } catch (err) {
+      console.error(err);
+      alert(getApiErrorMessage(err, 'Erro ao executar serviço.'));
+    }
+  }
+
+  root.querySelector('#btnCloseJsonModal')?.addEventListener('click', () => {
+    jsonModal.style.display = 'none';
+  });
+
+  root.querySelector('#btnFilter')?.addEventListener('click', () => loadBatches());
+  root.querySelector('#btnNewExecution')?.addEventListener('click', openNewExecutionModal);
+  root.querySelector('#btnCloseNewExecutionModal')?.addEventListener('click', closeNewExecutionModal);
+  root.querySelector('#btnCancelNewExecution')?.addEventListener('click', closeNewExecutionModal);
+  root.querySelector('#btnExecuteService')?.addEventListener('click', () => {
+    void executeSelectedService();
+  });
+
+  void loadServices();
+  void loadBatches();
+
+  return root;
+}

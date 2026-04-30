@@ -27,14 +27,29 @@ aside .brand {
   margin-bottom: 12px;
 }
 
+.nav-group {
+  margin-top: 16px;
+}
+
+.nav-group-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #6a769e;
+  padding: 0 10px;
+  margin-bottom: 4px;
+  letter-spacing: 0.5px;
+}
+
 aside nav a {
   display: block;
-  padding: 10px 10px;
-  margin: 4px 0;
+  padding: 8px 10px;
+  margin: 2px 0;
   border-radius: 8px;
   text-decoration: none;
   color: #d6e0ff;
   border: 1px solid transparent;
+  font-size: 14px;
 }
 
 aside nav a.active {
@@ -131,6 +146,45 @@ h1 {
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 12px;
   padding: 12px;
+}
+
+.api-service-modal {
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+}
+
+.api-service-form {
+  padding-right: 2px;
+}
+
+.get-params-list {
+  max-height: 250px;
+  overflow-y: auto;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  margin-bottom: 8px;
+}
+
+.get-params-list .table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #0f1733;
+}
+
+.get-params-list .table th,
+.get-params-list .table td {
+  padding: 5px 6px;
+}
+
+.get-params-list input,
+.get-params-list select {
+  margin-top: 0;
+  padding: 6px 8px;
+}
+
+.get-params-list .btnRemoveGetParam {
+  padding: 6px 8px;
 }
 
 .modal-header {

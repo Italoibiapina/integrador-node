@@ -3,3 +3,12 @@ SENHA: change-me
 
 // Rodar Debug Webscraping
 node .\powerstock-debug.mjs
+
+
+// Rodar Debug PowerStock API
+npm --workspace api run run:api-service -- --name "PowerStock Integration"
+
+npm --workspace api run run:api-service -- --id 15468bd8-2341-4362-8a77-b442f9b98fbc
+
+//URL login powerAStock
+https://canpconfeccoes.powerstock.app/login
