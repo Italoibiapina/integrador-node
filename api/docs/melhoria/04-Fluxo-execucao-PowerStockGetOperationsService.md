@@ -17,7 +17,7 @@ flowchart TD
   C --> D[getAuthConfigById]
   D --> E[createBatch se batchId nao informado]
   E --> F[updateServiceStatus running]
-  F --> G[ensureAuthenticated]
+  F --> G[PowerStockAuthService.ensureAuthenticated]
   G --> H[buildListUrlFromService]
   H --> I[executeSubStep Listagem de Operacoes]
   I --> J[toArray para normalizar resposta]
@@ -63,7 +63,7 @@ Responsabilidades:
 - Carrega configuracao de autenticacao (`auth_config_id`).
 - Cria batch (quando nao vier `batchId` externo).
 - Marca status do servico como `running`.
-- Garante sessao autenticada (`ensureAuthenticated`).
+- Garante sessao autenticada via `PowerStockAuthService.ensureAuthenticated(...)`.
 - Monta endpoint de listagem:
   - Prioridade 1: `endpoint_url + get_params` (`buildListUrlFromService`)
   - Prioridade 2: endpoint `fetch_operations` em `parametros/endpoints`
@@ -93,7 +93,7 @@ Responsabilidades:
   - `dataEmissaoFim` -> fim do dia local convertido para ISO UTC
 - Se nao houver `get_params`, usa fallback legado de `parametro_get` texto.
 
-### 4) `ensureAuthenticated(auth, service)`
+### 4) `PowerStockAuthService.ensureAuthenticated(auth)`
 
 Responsabilidades:
 - Reaproveita token salvo se ainda valido (`last_token` + `token_expires_at`).
@@ -159,6 +159,8 @@ Responsabilidades:
   - `finishServiceExecution`
   - `updateServiceStatus`
   - `updateAuthToken`
+- `PowerStockAuthService`:
+  - `ensureAuthenticated`
 - Utilitarios de parametros:
   - `buildQueryStringFromGetParams`
   - `mergeUrlWithQuery`

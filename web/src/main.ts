@@ -12,6 +12,7 @@ import { renderCustomConnectionsPage } from './pages/custom-connections';
 import { renderApiAuthConfigsPage } from './pages/api-auth-configs';
 import { renderApiServicesPage } from './pages/api-services';
 import { renderServiceExecutionLogsPage } from './pages/service-execution-logs';
+import { renderSistemaDestinoConfigsPage } from './pages/sistema-destino-configs';
 
 const apiBase = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:3005';
 
@@ -44,6 +45,7 @@ app.innerHTML = `
           <div class="nav-group-title">Master Data</div>
           <a href="#/api-auth-configs" data-path="/api-auth-configs">Api Auth Config</a>
           <a href="#/api-services" data-path="/api-services">Api Services</a>
+          <a href="#/sistema-destino-configs" data-path="/sistema-destino-configs">Sistema Destino Config</a>
         </div>
 
         <div class="nav-group">
@@ -201,6 +203,11 @@ async function render() {
 
   if (path === '/api-services') {
     viewEl.appendChild(renderApiServicesPage({ api }));
+    return;
+  }
+
+  if (path === '/sistema-destino-configs') {
+    viewEl.appendChild(renderSistemaDestinoConfigsPage({ api }));
     return;
   }
 

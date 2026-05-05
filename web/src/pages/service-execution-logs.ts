@@ -54,22 +54,44 @@ export function renderServiceExecutionLogsPage(deps: ServiceExecutionLogsPageDep
         </table>
       </div>
 
-      <div id="detailSection" class="card" style="display: none;">
-        <h2 style="font-size: 16px; margin-bottom: 12px;">Detalhes da Execução</h2>
-        <div id="batchDetail"></div>
-        
-        <h3 style="font-size: 14px; margin-top: 20px; margin-bottom: 10px;">Sub-etapas (Endpoints)</h3>
-        <table class="table">
-          <thead>
-            <tr>
-              <th>Início</th>
-              <th>Status</th>
-              <th>Duração</th>
-              <th>Ações</th>
-            </tr>
-          </thead>
-          <tbody id="executionRows"></tbody>
-        </table>
+      <div id="detailWorkspace" style="display: none;">
+        <div class="log-detail-grid">
+          <div id="detailSection" class="card">
+            <h2 style="font-size: 16px; margin-bottom: 12px;">Detalhes da Execução</h2>
+            <div id="batchDetail"></div>
+
+            <h3 style="font-size: 14px; margin-top: 20px; margin-bottom: 10px;">Execuções de Serviço</h3>
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Serviço</th>
+                  <th>Início</th>
+                  <th>Status</th>
+                  <th>Duração</th>
+                  <th>Ações</th>
+                </tr>
+              </thead>
+              <tbody id="executionRows"></tbody>
+            </table>
+          </div>
+
+          <div id="executionDetailSection" class="card" style="display: none;">
+            <h2 style="font-size: 16px; margin-bottom: 12px;">Detalhes da Execução Selecionada</h2>
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Serviço</th>
+                  <th>Sub-etapa</th>
+                  <th>Início</th>
+                  <th>Status</th>
+                  <th>Duração</th>
+                  <th>Ações</th>
+                </tr>
+              </thead>
+              <tbody id="executionDetailRows"></tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -110,8 +132,10 @@ export function renderServiceExecutionLogsPage(deps: ServiceExecutionLogsPageDep
 
   const batchRowsEl = root.querySelector<HTMLTableSectionElement>('#batchRows')!;
   const executionRowsEl = root.querySelector<HTMLTableSectionElement>('#executionRows')!;
+  const executionDetailRowsEl = root.querySelector<HTMLTableSectionElement>('#executionDetailRows')!;
   const batchDetailEl = root.querySelector<HTMLDivElement>('#batchDetail')!;
-  const detailSection = root.querySelector<HTMLDivElement>('#detailSection')!;
+  const detailWorkspace = root.querySelector<HTMLDivElement>('#detailWorkspace')!;
+  const executionDetailSection = root.querySelector<HTMLDivElement>('#executionDetailSection')!;
   const filterServiceSel = root.querySelector<HTMLSelectElement>('#filterService')!;
   const filterDateStart = root.querySelector<HTMLInputElement>('#filterDateStart')!;
   const filterDateEnd = root.querySelector<HTMLInputElement>('#filterDateEnd')!;
@@ -152,11 +176,38 @@ export function renderServiceExecutionLogsPage(deps: ServiceExecutionLogsPageDep
     }
   }
 
+  function resolveBatchServiceName(batch: any): string {
+    return (
+      batch?.snapshot_config?.service?.name ||
+      batch?.service_name ||
+      batch?.name ||
+      'Serviço'
+    );
+  }
+
+  function resolveExecutionServiceAndStep(execution: any): { service: string; subStep: string } {
+    const serviceName =
+      execution?.snapshot_config?.service?.service_name ||
+      execution?.snapshot_config?.service?.name ||
+      'Serviço';
+
+    const rawName = String(execution?.snapshot_config?.service?.name || '');
+    if (rawName.includes(' - ')) {
+      const parts = rawName.split(' - ');
+      return {
+        service: String(parts[0] || serviceName).trim() || serviceName,
+        subStep: String(parts.slice(1).join(' - ') || 'Execução principal').trim(),
+      };
+    }
+
+    return { service: String(serviceName), subStep: 'Execução principal' };
+  }
+
   function renderBatchRows(batches: ApiBatch[]) {
     batchRowsEl.innerHTML = batches.map(b => `
       <tr>
         <td>${new Date(b.started_at).toLocaleString()}</td>
-        <td>${b.snapshot_config?.service?.name || 'Serviço'}</td>
+        <td>${resolveBatchServiceName(b)}</td>
         <td>
           <span class="pill" style="color: ${b.status === 'success' ? '#52c41a' : b.status === 'error' ? '#ff4d4f' : '#faad14'}">
             ${b.status}
@@ -181,11 +232,13 @@ export function renderServiceExecutionLogsPage(deps: ServiceExecutionLogsPageDep
       const batch = await deps.api<ApiBatch>(`/api-integration/batches/${batchId}`);
       const executions = await deps.api<any[]>(`/api-integration/executions?batchId=${batchId}`);
       
-      detailSection.style.display = 'block';
+      detailWorkspace.style.display = 'block';
+      executionDetailSection.style.display = 'none';
       
       batchDetailEl.innerHTML = `
         <div style="font-size: 13px;">
           <p><strong>ID:</strong> ${batch.id}</p>
+          <p><strong>Serviço:</strong> ${resolveBatchServiceName(batch)}</p>
           <p><strong>Duração:</strong> ${batch.finished_at ? Math.round((new Date(batch.finished_at).getTime() - new Date(batch.started_at).getTime()) / 1000) + 's' : 'Em andamento'}</p>
           ${batch.error_message ? `<p style="color: #ff4d4f;"><strong>Erro:</strong> ${batch.error_message}</p>` : ''}
           <button id="btnViewBatchRaw" class="pill">Ver JSON Bruto do Lote</button>
@@ -196,12 +249,14 @@ export function renderServiceExecutionLogsPage(deps: ServiceExecutionLogsPageDep
         showJson(batch.raw_response);
       });
 
-      executionRowsEl.innerHTML = executions.map(ex => {
+      executionRowsEl.innerHTML = executions.map((ex, idx) => {
+        const executionInfo = resolveExecutionServiceAndStep(ex);
         const duration = ex.finished_at 
           ? Math.round((new Date(ex.finished_at).getTime() - new Date(ex.started_at).getTime()) / 1000) + 's'
           : '-';
         return `
           <tr>
+            <td>${executionInfo.service}</td>
             <td>${new Date(ex.started_at).toLocaleString()}</td>
             <td>
               <span class="pill" style="color: ${ex.status === 'success' ? '#52c41a' : ex.status === 'error' ? '#ff4d4f' : '#faad14'}">
@@ -210,7 +265,8 @@ export function renderServiceExecutionLogsPage(deps: ServiceExecutionLogsPageDep
             </td>
             <td>${duration}</td>
             <td>
-              <button class="btnViewExRaw" data-idx="${executions.indexOf(ex)}">Ver JSON</button>
+              <button class="btnViewExRaw" data-idx="${idx}">Ver JSON</button>
+              <button class="btnViewExDetails" data-id="${ex.id}" style="margin-left: 8px;">Ver Detalhes</button>
             </td>
           </tr>
         `;
@@ -223,9 +279,64 @@ export function renderServiceExecutionLogsPage(deps: ServiceExecutionLogsPageDep
         });
       });
 
+      executionRowsEl.querySelectorAll('.btnViewExDetails').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const executionId = (btn as HTMLElement).dataset.id!;
+          void loadExecutionDetails(executionId);
+        });
+      });
+
+      if (executions.length > 0 && executions[0]?.id) {
+        await loadExecutionDetails(executions[0].id);
+      } else {
+        executionDetailRowsEl.innerHTML = '<tr><td colspan="6" class="muted">Sem detalhes para este lote.</td></tr>';
+      }
+
     } catch (err) {
       console.error(err);
       alert('Erro ao carregar detalhes.');
+    }
+  }
+
+  async function loadExecutionDetails(executionId: string) {
+    try {
+      executionDetailSection.style.display = 'block';
+      const details = await deps.api<any[]>(`/api-integration/executions/${executionId}/details`);
+      if (!details.length) {
+        executionDetailRowsEl.innerHTML = '<tr><td colspan="6" class="muted">Sem sub-etapas para esta execução.</td></tr>';
+        return;
+      }
+
+      executionDetailRowsEl.innerHTML = details.map((ex, idx) => {
+        const executionInfo = resolveExecutionServiceAndStep(ex);
+        const duration = ex.finished_at
+          ? Math.round((new Date(ex.finished_at).getTime() - new Date(ex.started_at).getTime()) / 1000) + 's'
+          : '-';
+        return `
+          <tr>
+            <td>${executionInfo.service}</td>
+            <td>${executionInfo.subStep}</td>
+            <td>${new Date(ex.started_at).toLocaleString()}</td>
+            <td>
+              <span class="pill" style="color: ${ex.status === 'success' ? '#52c41a' : ex.status === 'error' ? '#ff4d4f' : '#faad14'}">
+                ${ex.status}
+              </span>
+            </td>
+            <td>${duration}</td>
+            <td><button class="btnViewExDetailRaw" data-idx="${idx}">Ver JSON</button></td>
+          </tr>
+        `;
+      }).join('');
+
+      executionDetailRowsEl.querySelectorAll('.btnViewExDetailRaw').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const idx = parseInt((btn as HTMLElement).dataset.idx || '0');
+          showJson(details[idx]?.raw_response);
+        });
+      });
+    } catch (err) {
+      console.error(err);
+      executionDetailRowsEl.innerHTML = '<tr><td colspan="6" class="muted">Erro ao carregar sub-etapas.</td></tr>';
     }
   }
 

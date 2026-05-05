@@ -12,3 +12,10 @@ npm --workspace api run run:api-service -- --id 15468bd8-2341-4362-8a77-b442f9b9
 
 //URL login powerAStock
 https://canpconfeccoes.powerstock.app/login
+
+
+
+npm --workspace api run run:api-service -- --name "PowerStock Buscar Operações"
+
+npm --workspace api run dev:dispatcher
+

@@ -1,5 +1,5 @@
 import { Db } from '../db.js';
-import { ApiService, ApiBatch, ApiServiceExecution, ApiAuthConfig, ApiServiceGetParam } from '../services/apiIntegrationTypes.js';
+import { ApiService, ApiBatch, ApiServiceExecution, ApiAuthConfig, ApiServiceGetParam, SistemaDestinoConfig } from '../services/apiIntegrationTypes.js';
 
 export class ApiServiceRepository {
   constructor(private db: Db) {}
@@ -118,6 +118,20 @@ export class ApiServiceRepository {
     return { ...service, get_params: paramsByService.get(service.id) ?? [] };
   }
 
+  async getServiceByServiceName(serviceName: string): Promise<ApiService | null> {
+    const result = await this.db.query<ApiService>(
+      `SELECT * FROM api_services
+       WHERE service_name = $1
+       ORDER BY is_active DESC, updated_at DESC
+       LIMIT 1`,
+      [serviceName]
+    );
+    const service = result.rows[0] || null;
+    if (!service) return null;
+    const paramsByService = await this.listServiceGetParams([service.id]);
+    return { ...service, get_params: paramsByService.get(service.id) ?? [] };
+  }
+
   async createService(data: Partial<ApiService>): Promise<ApiService> {
     const parametros = data.parametros ?? data.endpoints;
     const getParams = this.normalizeGetParams(data.get_params);
@@ -209,6 +223,28 @@ export class ApiServiceRepository {
     await this.db.query(query, params);
   }
 
+  async insertOperacaoRawIfChanged(idVendaExterno: string, payload: unknown, hashPayload: string): Promise<boolean> {
+    const result = await this.db.query<{ id: number }>(
+      `WITH ultimo AS (
+         SELECT hash_payload
+         FROM operacoes_raw
+         WHERE id_venda_externo = $1
+         ORDER BY data_extracao DESC, id DESC
+         LIMIT 1
+       )
+       INSERT INTO operacoes_raw (id_venda_externo, payload, hash_payload, status_processamento)
+       SELECT $1, $2::jsonb, $3, 'pendente'
+       WHERE NOT EXISTS (
+         SELECT 1
+         FROM ultimo
+         WHERE ultimo.hash_payload = $3
+       )
+       RETURNING id`,
+      [idVendaExterno, JSON.stringify(payload), hashPayload]
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
   // --- Auth Configs ---
 
   async listAuthConfigs(): Promise<ApiAuthConfig[]> {
@@ -275,12 +311,92 @@ export class ApiServiceRepository {
     );
   }
 
+  // --- Sistema Destino Config ---
+
+  async listSistemaDestinoConfigs(): Promise<SistemaDestinoConfig[]> {
+    const result = await this.db.query<SistemaDestinoConfig>(
+      'SELECT * FROM sistema_destino_config ORDER BY criado_em DESC, id DESC'
+    );
+    return result.rows;
+  }
+
+  async getSistemaDestinoConfigById(id: number): Promise<SistemaDestinoConfig | null> {
+    const result = await this.db.query<SistemaDestinoConfig>(
+      'SELECT * FROM sistema_destino_config WHERE id = $1',
+      [id]
+    );
+    return result.rows[0] || null;
+  }
+
+  async createSistemaDestinoConfig(data: Partial<SistemaDestinoConfig>): Promise<SistemaDestinoConfig> {
+    const result = await this.db.query<SistemaDestinoConfig>(
+      `INSERT INTO sistema_destino_config
+       (nome, tabela_origem, entidade_view, endpoint_url, metodo, ativo, conexao_api_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [
+        data.nome,
+        data.tabela_origem,
+        data.entidade_view,
+        data.endpoint_url,
+        data.metodo ?? 'POST',
+        data.ativo ?? true,
+        data.conexao_api_id,
+      ]
+    );
+    const row = result.rows[0];
+    if (!row) throw new Error('Falha ao criar configuração de sistema destino');
+    return row;
+  }
+
+  async updateSistemaDestinoConfig(id: number, data: Partial<SistemaDestinoConfig>): Promise<SistemaDestinoConfig | null> {
+    const result = await this.db.query<SistemaDestinoConfig>(
+      `UPDATE sistema_destino_config
+       SET nome = COALESCE($2, nome),
+           tabela_origem = COALESCE($3, tabela_origem),
+           entidade_view = COALESCE($4, entidade_view),
+           endpoint_url = COALESCE($5, endpoint_url),
+           metodo = COALESCE($6, metodo),
+           ativo = COALESCE($7, ativo),
+           conexao_api_id = COALESCE($8, conexao_api_id)
+       WHERE id = $1
+       RETURNING *`,
+      [
+        id,
+        data.nome,
+        data.tabela_origem,
+        data.entidade_view,
+        data.endpoint_url,
+        data.metodo,
+        data.ativo,
+        data.conexao_api_id,
+      ]
+    );
+    return result.rows[0] || null;
+  }
+
+  async deleteSistemaDestinoConfig(id: number): Promise<boolean> {
+    const result = await this.db.query('DELETE FROM sistema_destino_config WHERE id = $1 RETURNING id', [id]);
+    return (result.rowCount ?? 0) > 0;
+  }
+
   // --- Batches (Execução Total) ---
 
   async listBatches(filter: { serviceId?: string; status?: string; limit?: number; offset?: number }): Promise<ApiBatch[]> {
     const where: string[] = [];
     const params: any[] = [];
     
+    if (filter.serviceId) {
+      params.push(filter.serviceId);
+      where.push(
+        `EXISTS (
+          SELECT 1
+          FROM api_service_executions ex
+          WHERE ex.batch_id = api_batches.id
+            AND ex.service_id = $${params.length}::uuid
+        )`
+      );
+    }
+
     if (filter.status) {
       params.push(filter.status);
       where.push(`status = $${params.length}`);
@@ -332,9 +448,44 @@ export class ApiServiceRepository {
   // --- Execuções de Serviço (Logs com Snapshot) ---
 
   async listExecutionsByBatch(batchId: string): Promise<ApiServiceExecution[]> {
-    const result = await this.db.query<ApiServiceExecution>(
-      'SELECT * FROM api_service_executions WHERE batch_id = $1 ORDER BY started_at ASC',
+    const integratorRoots = await this.db.query<{ id: string }>(
+      `SELECT id
+       FROM api_service_executions
+       WHERE batch_id = $1
+         AND parent_execution_id IS NULL
+         AND snapshot_config->'service'->>'service_name' = 'IntegradorOperacoesLojaDoPowerStockService'
+       ORDER BY started_at ASC`,
       [batchId]
+    );
+
+    let result;
+    if ((integratorRoots.rowCount ?? 0) > 0) {
+      const parentIds = integratorRoots.rows.map((r) => r.id);
+      result = await this.db.query<ApiServiceExecution>(
+        `SELECT * FROM api_service_executions
+         WHERE batch_id = $1
+           AND parent_execution_id = ANY($2::uuid[])
+         ORDER BY started_at ASC`,
+        [batchId, parentIds]
+      );
+    } else {
+      result = await this.db.query<ApiServiceExecution>(
+        `SELECT * FROM api_service_executions
+         WHERE batch_id = $1
+           AND parent_execution_id IS NULL
+         ORDER BY started_at ASC`,
+        [batchId]
+      );
+    }
+    return result.rows;
+  }
+
+  async listExecutionDetails(parentExecutionId: string): Promise<ApiServiceExecution[]> {
+    const result = await this.db.query<ApiServiceExecution>(
+      `SELECT * FROM api_service_executions
+       WHERE parent_execution_id = $1
+       ORDER BY started_at ASC`,
+      [parentExecutionId]
     );
     return result.rows;
   }
@@ -342,11 +493,12 @@ export class ApiServiceRepository {
   async createServiceExecution(execution: Omit<ApiServiceExecution, 'id' | 'created_at'>): Promise<string> {
     const result = await this.db.query<{ id: string }>(
       `INSERT INTO api_service_executions 
-       (batch_id, service_id, snapshot_config, started_at, status, error_message, raw_response)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+       (batch_id, service_id, parent_execution_id, snapshot_config, started_at, status, error_message, raw_response)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
       [
         execution.batch_id, 
         execution.service_id, 
+        execution.parent_execution_id ?? null,
         JSON.stringify(execution.snapshot_config), 
         execution.started_at, 
         execution.status, 

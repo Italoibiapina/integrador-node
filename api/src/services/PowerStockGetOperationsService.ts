@@ -1,16 +1,14 @@
 import { ApiServiceRepository } from '../repositories/ApiServiceRepository.js';
 import { ApiService, ApiEndpointConfig, ApiAuthConfig } from './apiIntegrationTypes.js';
 import { buildQueryStringFromGetParams, mergeUrlWithQuery } from './util/paramsFormatter.js';
+import { PowerStockAuthService, PowerStockAuthSession } from './PowerStockAuthService.js';
+import { createHash } from 'node:crypto';
 
-type AuthSession = {
-  token?: string;
-  cookie?: string;
-  lojaId?: string;
+type AuthSession = PowerStockAuthSession;
+type ExecuteServiceContext = {
+  batchId?: string;
+  executionId?: string;
 };
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 function normalizeHeaderValue(value: string): string {
   return value.trim().replace(/^`+|`+$/g, '').trim();
@@ -24,7 +22,11 @@ function isApiEndpointConfig(value: unknown): value is ApiEndpointConfig {
 }
 
 export class PowerStockGetOperationsService {
-  constructor(private repository: ApiServiceRepository) {}
+  private readonly authService: PowerStockAuthService;
+
+  constructor(private repository: ApiServiceRepository) {
+    this.authService = new PowerStockAuthService(repository);
+  }
 
   private toArray(value: unknown): any[] {
     if (Array.isArray(value)) return value;
@@ -48,6 +50,88 @@ export class PowerStockGetOperationsService {
       }
     }
     return [];
+  }
+
+  private stableStringify(value: unknown): string {
+    const serialize = (input: unknown): unknown => {
+      if (Array.isArray(input)) return input.map(serialize);
+      if (!input || typeof input !== 'object') return input;
+      const obj = input as Record<string, unknown>;
+      const sortedKeys = Object.keys(obj).sort((a, b) => a.localeCompare(b));
+      const normalized: Record<string, unknown> = {};
+      for (const key of sortedKeys) normalized[key] = serialize(obj[key]);
+      return normalized;
+    };
+    return JSON.stringify(serialize(value));
+  }
+
+  private hashPayload(value: unknown): string {
+    const normalized = this.stableStringify(value);
+    return createHash('sha256').update(normalized).digest('hex');
+  }
+
+  private async persistVendasRawFromRegistros(
+    registros: Array<{ idVendaExterno: string; payload: unknown }>
+  ): Promise<{ inserted: number; discarded: number }> {
+    let inserted = 0;
+    let discarded = 0;
+
+    for (const registro of registros) {
+      const idVendaExterno = String(registro.idVendaExterno ?? '').trim();
+      if (!idVendaExterno) continue;
+
+      const hashPayload = this.hashPayload(registro.payload);
+      const wasInserted = await this.repository.insertOperacaoRawIfChanged(idVendaExterno, registro.payload, hashPayload);
+      if (wasInserted) inserted += 1;
+      else discarded += 1;
+    }
+
+    return { inserted, discarded };
+  }
+
+  private extractOperationId(operation: unknown): string | null {
+    if (!operation || typeof operation !== 'object') return null;
+    const op = operation as Record<string, unknown>;
+    return String(op.id ?? op.ID ?? op.codigo ?? '').trim() || null;
+  }
+
+  private buildDefaultDetailedPath(service: ApiService, operationId: string): string {
+    const serviceEndpoint = service.endpoint_url?.trim();
+    if (!serviceEndpoint) {
+      return `/api/pedidoorcamentovenda/obter-detalhado?id=${encodeURIComponent(operationId)}`;
+    }
+    const origin = new URL(serviceEndpoint).origin;
+    return `${origin}/api/pedidoorcamentovenda/obter-detalhado?id=${encodeURIComponent(operationId)}`;
+  }
+
+  private buildDetailEndpointConfig(
+    service: ApiService,
+    endpoints: Record<string, ApiEndpointConfig>,
+    operationId: string
+  ): ApiEndpointConfig {
+    const configuredDetail = endpoints['fetch_details'];
+    if (configuredDetail) {
+      let detailPath = configuredDetail.path;
+      if (detailPath.includes(':id') || detailPath.includes('{id}')) {
+        detailPath = detailPath.replace(':id', operationId).replace('{id}', operationId);
+      } else {
+        detailPath = `${detailPath}${detailPath.includes('?') ? '&' : '?'}id=${encodeURIComponent(operationId)}`;
+      }
+      return { ...configuredDetail, method: 'GET', path: detailPath };
+    }
+
+    return {
+      method: 'GET',
+      path: this.buildDefaultDetailedPath(service, operationId),
+    };
+  }
+
+  private extractDetailPayload(detailResponse: unknown): unknown {
+    if (!detailResponse || typeof detailResponse !== 'object') return detailResponse;
+    const responseObj = detailResponse as Record<string, unknown>;
+    const dados = responseObj.dados;
+    if (dados && typeof dados === 'object') return dados;
+    return detailResponse;
   }
 
   private buildListUrlFromService(service: ApiService): string | null {
@@ -97,7 +181,12 @@ export class PowerStockGetOperationsService {
     return endpointMap;
   }
 
-  async executeService(serviceId: string, batchId?: string): Promise<{ success: boolean; data?: any; error?: string }> {
+  async executeService(
+    serviceId: string,
+    contextOrBatchId?: string | ExecuteServiceContext
+  ): Promise<{ success: boolean; data?: any; error?: string }> {
+    const externalBatchId = typeof contextOrBatchId === 'string' ? contextOrBatchId : contextOrBatchId?.batchId;
+    const externalExecutionId = typeof contextOrBatchId === 'string' ? undefined : contextOrBatchId?.executionId;
 
     const service = await this.repository.getServiceById(serviceId);
     if (!service) throw new Error('Serviço não encontrado');
@@ -107,12 +196,21 @@ export class PowerStockGetOperationsService {
     if (!auth) throw new Error('Configuração de autenticação não encontrada');
 
     // Início do Lote (Batch)
-    const effectiveBatchId = batchId || await this.repository.createBatch('manual', service);
+    const effectiveBatchId = externalBatchId || await this.repository.createBatch('manual', service);
+    const rootExecutionId =
+      externalExecutionId ||
+      await this.repository.createServiceExecution({
+        batch_id: effectiveBatchId,
+        service_id: service.id,
+        snapshot_config: { service: { ...service }, auth: { ...auth } },
+        started_at: new Date(),
+        status: 'running',
+      });
 
     try {
       await this.repository.updateServiceStatus(serviceId, 'running');
       // 1. Garantir Autenticação
-      const session = await this.ensureAuthenticated(auth, service);
+      const session = await this.authService.ensureAuthenticated(auth);
 
       // 2. ETAPA 1: Listagem de Operações (endpoint_url + parametro_get)
       const listUrl = this.buildListUrlFromService(service);
@@ -123,6 +221,7 @@ export class PowerStockGetOperationsService {
 
       const operationsResponse = await this.executeSubStep(
         effectiveBatchId,
+        rootExecutionId,
         service,
         auth,
         listConfig,
@@ -149,64 +248,86 @@ export class PowerStockGetOperationsService {
         throw new Error('Resposta da listagem não é um array válido');
       }
 
-      // 3. ETAPA 2: Detalhes de cada Operação (fetch_details)
-      const detailConfig = endpoints['fetch_details'];
       const results = [];
       let hasFailures = false;
+      const rawEntries: Array<{ idVendaExterno: string; payload: unknown }> = [];
 
-      if (detailConfig) {
-        for (const op of operations) {
-          try {
-            // Substitui placeholder :id ou {id} na URL se existir
-            const opId = op.id || op.ID || op.codigo;
-            if (!opId) continue;
+      // 3. ETAPA 2: Detalhes de cada Operação (obter-detalhado?id=<id>)
+      for (const op of operations) {
+        try {
+          const opId = this.extractOperationId(op);
+          if (!opId) continue;
+          const detailConfig = this.buildDetailEndpointConfig(service, endpoints, opId);
+          const detailResponse = await this.executeSubStep(
+            effectiveBatchId,
+            rootExecutionId,
+            service,
+            auth,
+            detailConfig,
+            session,
+            `Detalhes da Operação: ${opId}`
+          );
 
-            const specificDetailConfig: ApiEndpointConfig = {
-              ...detailConfig,
-              path: detailConfig.path.replace(':id', opId).replace('{id}', opId)
-            };
-
-            const detailResponse = await this.executeSubStep(
-              effectiveBatchId,
-              service,
-              auth,
-              specificDetailConfig,
-              session,
-              `Detalhes da Operação: ${opId}`
-            );
-
-            results.push(detailResponse);
-            
-            // TODO: Aqui entraria o MapData para as tabelas internas
-            // await this.mapToInternalTables(detailResponse);
-
-          } catch (error) {
-            console.error(`Erro ao buscar detalhes da operação:`, error);
-            hasFailures = true;
-          }
+          results.push(detailResponse);
+          const rawPayload = this.extractDetailPayload(detailResponse);
+          rawEntries.push({ idVendaExterno: opId, payload: rawPayload });
+        } catch (error) {
+          console.error('Erro ao buscar detalhes da operação:', error);
+          hasFailures = true;
         }
       }
+
+      const rawPersistResult = await this.persistVendasRawFromRegistros(rawEntries);
+      console.log('============================> operacoes_raw.persist:', {
+        total_registros_listagem: operations.length,
+        total_detalhes_processados: rawEntries.length,
+        inseridos: rawPersistResult.inserted,
+        descartados_hash_igual: rawPersistResult.discarded,
+      });
 
       // Finalização do Lote
       const finalStatus = hasFailures ? 'partial' : 'success';
       await this.repository.updateServiceStatus(serviceId, 'idle', new Date());
       
-      if (!batchId) {
+      if (!externalBatchId) {
         await this.repository.finishBatch(effectiveBatchId, finalStatus, undefined, { 
           operations_count: operations.length,
-          details_fetched: results.length
+          details_fetched: results.length,
+          operacoes_raw_inserted: rawPersistResult.inserted,
+          operacoes_raw_discarded: rawPersistResult.discarded
         });
       }
+      await this.repository.finishServiceExecution(
+        rootExecutionId,
+        hasFailures ? 'failed' : 'success',
+        new Date(),
+        {
+        operations_count: operations.length,
+        details_fetched: results.length,
+        operacoes_raw_inserted: rawPersistResult.inserted,
+        operacoes_raw_discarded: rawPersistResult.discarded,
+        },
+        hasFailures ? 'Execução parcial: falha em uma ou mais etapas de detalhe.' : undefined
+      );
 
-      return { success: !hasFailures, data: { operations_count: operations.length, details_fetched: results.length } };
+      return {
+        success: !hasFailures,
+        data: {
+          operations_count: operations.length,
+          details_fetched: results.length,
+          operacoes_raw_inserted: rawPersistResult.inserted,
+          operacoes_raw_discarded: rawPersistResult.discarded
+        }
+      };
 
     } catch (error: any) {
       const errorMessage = error.message || 'Erro desconhecido na orquestração do serviço';
       await this.repository.updateServiceStatus(serviceId, 'error');
 
-      if (!batchId) {
+      if (!externalBatchId) {
         await this.repository.finishBatch(effectiveBatchId, 'failed', errorMessage);
       }
+      await this.repository.finishServiceExecution(rootExecutionId, 'failed', new Date(), null, errorMessage);
 
       return { success: false, error: errorMessage };
     }
@@ -217,6 +338,7 @@ export class PowerStockGetOperationsService {
    */
   private async executeSubStep(
     batchId: string,
+    parentExecutionId: string,
     service: ApiService,
     auth: ApiAuthConfig,
     endpoint: ApiEndpointConfig,
@@ -226,6 +348,7 @@ export class PowerStockGetOperationsService {
     const executionId = await this.repository.createServiceExecution({
       batch_id: batchId,
       service_id: service.id,
+      parent_execution_id: parentExecutionId,
       snapshot_config: {
         service: { ...service, name: `${service.name} - ${stepName}` },
         auth: { ...auth }
@@ -243,113 +366,6 @@ export class PowerStockGetOperationsService {
       await this.repository.finishServiceExecution(executionId, 'failed', new Date(), null, errorMsg);
       throw error;
     }
-  }
-
-  private async ensureAuthenticated(auth: ApiAuthConfig, service: ApiService): Promise<AuthSession> {
-
-    //console.log('============================> service:', service);
-
-    // Se o token ainda for válido, reutiliza
-    if (auth.last_token && auth.token_expires_at && auth.token_expires_at > new Date()) {
-      return { token: auth.last_token };
-    }
-
-    //console.log('============================> ensureAuthenticated INICIO ');
-    //console.log('============================> auth.base_url (login):', auth.base_url);
-
-    const requestHeaders: Record<string, string> = {
-      'Content-Type': 'application/json',
-      ...auth.extra_headers,
-    };
-    for (const [key, value] of Object.entries(requestHeaders)) {
-      if (typeof value === 'string') {
-        requestHeaders[key] = normalizeHeaderValue(value);
-      }
-    }
-    const loginAttempt = async (attempt: 1 | 2, executarLogoffSessaoParalela: boolean): Promise<{
-      token?: string;
-      cookie?: string;
-      lojaId?: string;
-      possuiOutraSessaoAtiva: boolean;
-    }> => {
-      const loginPayload = {
-        usuario: auth.username,
-        senha: auth.password,
-        executarLogOffSessaoParelela: executarLogoffSessaoParalela,
-        lojaPadraoId: null,
-      };
-
-      //console.log(
-      //  `============================> ensureAuthenticated.attempt=${attempt} executarLogoffSessaoParalela=${String(executarLogoffSessaoParalela)}`
-      //);
-      //console.log('============================> ensureAuthenticated.request.headers:', requestHeaders);
-      //console.log('============================> ensureAuthenticated.request.body:', {
-      //  ...loginPayload,
-      //  senha: loginPayload.senha ? '***' : loginPayload.senha,
-      //});
-
-      const response = await fetch(auth.base_url, {
-        method: 'POST',
-        headers: requestHeaders,
-        body: JSON.stringify(loginPayload)
-      });
-
-      const responseBodyText = await response.text();
-      //console.log('============================> ensureAuthenticated.response.status:', response.status, response.statusText);
-      //console.log('============================> ensureAuthenticated.response.body:', responseBodyText || '<vazio>');
-
-      if (!response.ok) {
-        throw new Error(
-          `Falha na autenticação: ${response.status} ${response.statusText}. Body: ${responseBodyText || '<vazio>'}`
-        );
-      }
-
-      let result: any = {};
-      try {
-        result = responseBodyText ? JSON.parse(responseBodyText) : {};
-      } catch {
-        throw new Error(`Resposta de autenticação não é JSON válido. Body: ${responseBodyText || '<vazio>'}`);
-      }
-
-      const token = result.dados?.token || result.token || result.accessToken;
-      const possuiOutraSessaoAtiva = result.dados?.possuiOutraSessaoAtiva === true;
-      const lojaId = typeof result.dados?.loja?.id === 'string' ? result.dados.loja.id : undefined;
-
-      const setCookieHeaders =
-        (typeof response.headers.getSetCookie === 'function' ? response.headers.getSetCookie() : undefined) ??
-        [];
-      const setCookieSingle = response.headers.get('set-cookie');
-      const setCookieValues = setCookieHeaders.length
-        ? setCookieHeaders
-        : (setCookieSingle ? [setCookieSingle] : []);
-      //console.log('============================> ensureAuthenticated.response.set-cookie.raw:', setCookieValues);
-      const cookie = setCookieValues
-        .map((line) => line.split(';', 1)[0]?.trim())
-        .filter((line): line is string => Boolean(line))
-        .join('; ');
-      //console.log('============================> ensureAuthenticated.response.cookie.compact:', cookie || '<vazio>');
-
-      return { token, cookie: cookie || undefined, lojaId, possuiOutraSessaoAtiva };
-    };
-
-    let loginResult = await loginAttempt(1, false);
-    if (!loginResult.token && loginResult.possuiOutraSessaoAtiva) {
-      //console.log('============================> ensureAuthenticated.retry: possuiOutraSessaoAtiva=true e sem token. Aguardando 1s para tentar novamente...');
-      await sleep(1000);
-      loginResult = await loginAttempt(2, true);
-    }
-
-    const token = loginResult.token;
-    const cookie = loginResult.cookie;
-    const lojaId = loginResult.lojaId;
-    if (!token && !cookie) throw new Error('Falha ao obter autenticação no retorno da API (sem token e sem cookie)');
-
-    // Atualiza o token na configuração de autenticação (compartilhada)
-    if (token) {
-      await this.repository.updateAuthToken(auth.id, token);
-    }
-
-    return { token, cookie: cookie || undefined, lojaId };
   }
 
   private async callApi(auth: ApiAuthConfig, service: ApiService, endpoint: ApiEndpointConfig, session: AuthSession): Promise<any> {

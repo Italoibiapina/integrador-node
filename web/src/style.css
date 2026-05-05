@@ -87,8 +87,20 @@ h1 {
   gap: 12px;
 }
 
+.log-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
 @media (min-width: 980px) {
   .grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (min-width: 1400px) {
+  .log-detail-grid {
     grid-template-columns: 1fr 1fr;
   }
 }

@@ -65,6 +65,7 @@ export interface ApiServiceExecution {
   id: string;
   batch_id: string;
   service_id: string;
+  parent_execution_id?: string | null;
   
   // Snapshot da configuração usada (Serviço + Auth)
   snapshot_config: {
@@ -77,4 +78,16 @@ export interface ApiServiceExecution {
   status: 'success' | 'failed' | 'running';
   error_message?: string;
   raw_response?: any;
+}
+
+export interface SistemaDestinoConfig {
+  id: number;
+  nome: string;
+  tabela_origem: string;
+  entidade_view: string;
+  endpoint_url: string;
+  metodo: string;
+  ativo: boolean;
+  conexao_api_id: string;
+  criado_em: Date;
 }

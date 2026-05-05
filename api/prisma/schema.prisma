@@ -1,0 +1,57 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model IntegracaoPendente {
+  id              BigInt    @id @default(autoincrement())
+  sistemaNome     String    @map("sistema_nome")
+  endpointUrl     String    @map("endpoint_url")
+  metodo          String    @default("POST")
+  entidade        String
+  entidadeView    String?   @map("entidade_view")
+  payloadId       BigInt    @map("payload_id")
+  status          String    @default("pendente")
+  tentativas      Int       @default(0)
+  ultimaTentativa DateTime? @map("ultima_tentativa")
+  logErro         String?   @map("log_erro")
+
+  @@map("integracao_pendente")
+  @@index([status], map: "idx_integracao_pendente_status")
+}
+
+model SistemaDestinoConfig {
+  id          BigInt    @id @default(autoincrement())
+  nome        String    @unique
+  tabelaOrigem String   @map("tabela_origem")
+  entidadeView String   @map("entidade_view")
+  endpointUrl String    @map("endpoint_url")
+  metodo      String    @default("POST")
+  ativo       Boolean   @default(true)
+  conexaoApiId String   @map("conexao_api_id") @db.Uuid
+  criadoEm    DateTime  @default(now()) @map("criado_em")
+
+  @@map("sistema_destino_config")
+  @@index([tabelaOrigem], map: "idx_sistema_destino_config_tabela_origem")
+  @@index([ativo], map: "idx_sistema_destino_config_ativo")
+}
+
+model ApiAuthConfig {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name           String
+  authType       String    @default("bearer") @map("auth_type")
+  baseUrl        String    @map("base_url")
+  username       String?
+  password       String?
+  lastToken      String?   @map("last_token")
+  tokenExpiresAt DateTime? @map("token_expires_at")
+  extraHeaders   Json?     @default("{}") @map("extra_headers")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @default(now()) @map("updated_at")
+
+  @@map("api_auth_configs")
+}

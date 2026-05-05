@@ -39,6 +39,51 @@ export async function apiIntegrationRoutes(fastify: FastifyInstance, options: Fa
     reply.send({ ok: true });
   });
 
+  // Sistema Destino Config
+  fastify.get('/sistema-destino-configs', async () => {
+    return await repository.listSistemaDestinoConfigs();
+  });
+
+  fastify.get('/sistema-destino-configs/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parsedId = Number(id);
+    if (!Number.isInteger(parsedId) || parsedId <= 0) {
+      return reply.code(400).send({ error: 'Invalid id' });
+    }
+    const result = await repository.getSistemaDestinoConfigById(parsedId);
+    if (!result) return reply.code(404).send({ error: 'Not found' });
+    reply.send(result);
+  });
+
+  fastify.post('/sistema-destino-configs', async (request, reply) => {
+    const body = request.body as any;
+    const result = await repository.createSistemaDestinoConfig(body);
+    reply.code(201).send(result);
+  });
+
+  fastify.put('/sistema-destino-configs/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parsedId = Number(id);
+    if (!Number.isInteger(parsedId) || parsedId <= 0) {
+      return reply.code(400).send({ error: 'Invalid id' });
+    }
+    const body = request.body as any;
+    const result = await repository.updateSistemaDestinoConfig(parsedId, body);
+    if (!result) return reply.code(404).send({ error: 'Not found' });
+    reply.send(result);
+  });
+
+  fastify.delete('/sistema-destino-configs/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parsedId = Number(id);
+    if (!Number.isInteger(parsedId) || parsedId <= 0) {
+      return reply.code(400).send({ error: 'Invalid id' });
+    }
+    const success = await repository.deleteSistemaDestinoConfig(parsedId);
+    if (!success) return reply.code(404).send({ error: 'Not found' });
+    reply.send({ ok: true });
+  });
+
   // Services
   fastify.get('/services', async () => {
     return await repository.listServices();
@@ -129,5 +174,10 @@ export async function apiIntegrationRoutes(fastify: FastifyInstance, options: Fa
   fastify.get('/executions', async (request) => {
     const query = request.query as any;
     return await repository.listExecutionsByBatch(query.batchId);
+  });
+
+  fastify.get('/executions/:id/details', async (request) => {
+    const { id } = request.params as { id: string };
+    return await repository.listExecutionDetails(id);
   });
 }
