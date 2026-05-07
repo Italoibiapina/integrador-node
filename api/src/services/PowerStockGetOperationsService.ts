@@ -8,6 +8,8 @@ type AuthSession = PowerStockAuthSession;
 type ExecuteServiceContext = {
   batchId?: string;
   executionId?: string;
+  dataEmissaoInicio?: string | Date;
+  dataEmissaoFim?: string | Date;
 };
 
 function normalizeHeaderValue(value: string): string {
@@ -19,6 +21,31 @@ function isApiEndpointConfig(value: unknown): value is ApiEndpointConfig {
   const v = value as Record<string, unknown>;
   return typeof v.path === 'string' &&
     (v.method === 'GET' || v.method === 'POST' || v.method === 'PUT' || v.method === 'DELETE');
+}
+
+function setLocalTime(baseDate: Date, hours: number, minutes: number): Date {
+  return new Date(
+    baseDate.getFullYear(),
+    baseDate.getMonth(),
+    baseDate.getDate(),
+    hours,
+    minutes,
+    0,
+    0
+  );
+}
+
+function parseLocalDateInput(value: string): Date | null {
+  const trimmed = value.trim();
+  const ymd = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+  if (ymd) {
+    return new Date(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3]), 0, 0, 0, 0);
+  }
+  const dmy = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(trimmed);
+  if (dmy) {
+    return new Date(Number(dmy[3]), Number(dmy[2]) - 1, Number(dmy[1]), 0, 0, 0, 0);
+  }
+  return null;
 }
 
 export class PowerStockGetOperationsService {
@@ -134,27 +161,97 @@ export class PowerStockGetOperationsService {
     return detailResponse;
   }
 
-  private buildListUrlFromService(service: ApiService): string | null {
+  private resolveRangeDateInput(
+    value: string | Date | undefined,
+    boundary: 'start' | 'end'
+  ): Date {
+    if (!value) {
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      return boundary === 'start'
+        ? setLocalTime(yesterday, 0, 0)
+        : setLocalTime(yesterday, 23, 59);
+    }
+
+    if (value instanceof Date) {
+      if (Number.isNaN(value.getTime())) {
+        throw new Error(`Data inválida para ${boundary === 'start' ? 'dataEmissaoInicio' : 'dataEmissaoFim'}.`);
+      }
+      return new Date(value.getTime());
+    }
+
+    const raw = String(value).trim();
+    if (!raw) {
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      return boundary === 'start'
+        ? setLocalTime(yesterday, 0, 0)
+        : setLocalTime(yesterday, 23, 59);
+    }
+
+    const dateOnly = parseLocalDateInput(raw);
+    if (dateOnly) {
+      return boundary === 'start'
+        ? setLocalTime(dateOnly, 0, 0)
+        : setLocalTime(dateOnly, 23, 59);
+    }
+
+    const parsed = new Date(raw);
+    if (Number.isNaN(parsed.getTime())) {
+      throw new Error(`Data inválida para ${boundary === 'start' ? 'dataEmissaoInicio' : 'dataEmissaoFim'}: ${raw}`);
+    }
+    return parsed;
+  }
+
+  private buildDateRangeParams(context?: ExecuteServiceContext): { dataEmissaoInicio: string; dataEmissaoFim: string } {
+    const startDate = this.resolveRangeDateInput(context?.dataEmissaoInicio, 'start');
+    const endDate = this.resolveRangeDateInput(context?.dataEmissaoFim, 'end');
+    return {
+      dataEmissaoInicio: startDate.toISOString(),
+      dataEmissaoFim: endDate.toISOString(),
+    };
+  }
+
+  private buildListUrlFromService(
+    service: ApiService,
+    dateRangeParams: { dataEmissaoInicio: string; dataEmissaoFim: string }
+  ): string | null {
     const endpointUrl = service.endpoint_url?.trim();
     if (!endpointUrl) return null;
 
-    const typedQueryString = buildQueryStringFromGetParams(service.get_params ?? [], {
+    const filteredGetParams = (service.get_params ?? []).filter((param) => {
+      const normalized = String(param?.name ?? '').trim().toLowerCase();
+      return normalized !== 'dataemissaoinicio' && normalized !== 'dataemissaofim';
+    });
+
+    const typedQueryString = buildQueryStringFromGetParams(filteredGetParams, {
       dateOutputFormat: 'YYYY-MM-DD',
       powerStockUtcRangeDateTime: true,
     });
-    if (typedQueryString) {
-      return mergeUrlWithQuery(endpointUrl, typedQueryString);
-    }
+    let listUrl = typedQueryString
+      ? mergeUrlWithQuery(endpointUrl, typedQueryString)
+      : endpointUrl;
 
     const rawParams = service.parametro_get?.trim();
-    if (!rawParams) return endpointUrl;
-    const normalizedParams = rawParams
-      .split(/\r?\n/g)
-      .map((line) => line.trim().replace(/^&+|&+$/g, ''))
-      .filter(Boolean)
-      .join('&');
+    if (rawParams) {
+      const normalizedParams = rawParams
+        .split(/\r?\n/g)
+        .map((line) => line.trim().replace(/^&+|&+$/g, ''))
+        .filter(Boolean)
+        .filter((line) => {
+          const key = line.split('=', 1)[0]?.trim().toLowerCase();
+          return key !== 'dataemissaoinicio' && key !== 'dataemissaofim';
+        })
+        .join('&');
+      if (normalizedParams) {
+        listUrl = mergeUrlWithQuery(listUrl, normalizedParams);
+      }
+    }
 
-    return mergeUrlWithQuery(endpointUrl, normalizedParams);
+    return mergeUrlWithQuery(
+      listUrl,
+      `dataEmissaoInicio=${encodeURIComponent(dateRangeParams.dataEmissaoInicio)}&dataEmissaoFim=${encodeURIComponent(dateRangeParams.dataEmissaoFim)}`
+    );
   }
 
   private resolveRequestUrl(auth: ApiAuthConfig, service: ApiService, endpointPath: string): string {
@@ -187,6 +284,8 @@ export class PowerStockGetOperationsService {
   ): Promise<{ success: boolean; data?: any; error?: string }> {
     const externalBatchId = typeof contextOrBatchId === 'string' ? contextOrBatchId : contextOrBatchId?.batchId;
     const externalExecutionId = typeof contextOrBatchId === 'string' ? undefined : contextOrBatchId?.executionId;
+    const executionContext = typeof contextOrBatchId === 'string' ? undefined : contextOrBatchId;
+    const dateRangeParams = this.buildDateRangeParams(executionContext);
 
     const service = await this.repository.getServiceById(serviceId);
     if (!service) throw new Error('Serviço não encontrado');
@@ -213,7 +312,7 @@ export class PowerStockGetOperationsService {
       const session = await this.authService.ensureAuthenticated(auth);
 
       // 2. ETAPA 1: Listagem de Operações (endpoint_url + parametro_get)
-      const listUrl = this.buildListUrlFromService(service);
+      const listUrl = this.buildListUrlFromService(service, dateRangeParams);
       const listConfig = listUrl
         ? ({ path: listUrl, method: 'GET' } as ApiEndpointConfig)
         : endpoints['fetch_operations'];

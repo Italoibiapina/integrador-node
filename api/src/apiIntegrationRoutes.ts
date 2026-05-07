@@ -138,8 +138,15 @@ export async function apiIntegrationRoutes(fastify: FastifyInstance, options: Fa
 
   fastify.post('/services/:id/execute', async (request, reply) => {
     const { id } = request.params as { id: string };
+    const query = request.query as Record<string, unknown>;
+    const body = (request.body as Record<string, unknown> | undefined) ?? {};
+    const dataEmissaoInicio = (body.dataEmissaoInicio ?? query.dataEmissaoInicio) as string | undefined;
+    const dataEmissaoFim = (body.dataEmissaoFim ?? query.dataEmissaoFim) as string | undefined;
     try {
-      const result = await powerStockGetOperationsService.executeService(id);
+      const result = await powerStockGetOperationsService.executeService(id, {
+        dataEmissaoInicio,
+        dataEmissaoFim,
+      });
       if (!result.success) {
         return reply.code(500).send({ ok: false, error: result.error ?? 'Falha ao executar serviço' });
       }

@@ -6,6 +6,8 @@ import { PowerStockGetOperationsService } from '../services/PowerStockGetOperati
 type CliArgs = {
   id?: string;
   name?: string;
+  dataEmissaoInicio?: string;
+  dataEmissaoFim?: string;
 };
 
 function parseArgs(argv: string[]): CliArgs {
@@ -33,6 +35,26 @@ function parseArgs(argv: string[]): CliArgs {
       i += 1;
       continue;
     }
+
+    if (token.startsWith('--dataEmissaoInicio=')) {
+      out.dataEmissaoInicio = token.slice('--dataEmissaoInicio='.length).trim();
+      continue;
+    }
+    if (token === '--dataEmissaoInicio') {
+      out.dataEmissaoInicio = (argv[i + 1] ?? '').trim();
+      i += 1;
+      continue;
+    }
+
+    if (token.startsWith('--dataEmissaoFim=')) {
+      out.dataEmissaoFim = token.slice('--dataEmissaoFim='.length).trim();
+      continue;
+    }
+    if (token === '--dataEmissaoFim') {
+      out.dataEmissaoFim = (argv[i + 1] ?? '').trim();
+      i += 1;
+      continue;
+    }
   }
   return out;
 }
@@ -43,10 +65,12 @@ function printUsage(): void {
       'Uso:',
       '  npm run run:api-service -- --id <service_id>',
       '  npm run run:api-service -- --name "<nome do service>"',
+      '  npm run run:api-service -- --name "<nome do service>" --dataEmissaoInicio <yyyy-mm-dd> --dataEmissaoFim <yyyy-mm-dd>',
       '',
       'Exemplos:',
       '  npm run run:api-service -- --id 123e4567-e89b-12d3-a456-426614174000',
       '  npm run run:api-service -- --name "PowerStock Integracao"',
+      '  npm run run:api-service -- --name "PowerStock Buscar Operações" --dataEmissaoInicio 2026-05-01 --dataEmissaoFim 2026-05-01',
       '',
     ].join('\n')
   );
@@ -78,7 +102,10 @@ async function main(): Promise<void> {
     const runner = new PowerStockGetOperationsService(repository);
 
     process.stdout.write(`Executando service: ${serviceId}\n`);
-    const result = await runner.executeService(serviceId);
+    const result = await runner.executeService(serviceId, {
+      dataEmissaoInicio: args.dataEmissaoInicio,
+      dataEmissaoFim: args.dataEmissaoFim,
+    });
 
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     if (!result.success) {
