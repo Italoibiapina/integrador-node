@@ -19,7 +19,7 @@ Pj1058@
 
 npm --workspace api run run:api-service -- --name "PowerStock Buscar Operações"
 
-npm --workspace api run run:api-service -- --name "PowerStock Buscar Operações" --dataEmissaoInicio 2026-05-01 --dataEmissaoFim 2026-05-01
+npm --workspace api run run:api-service -- --name "PowerStock Buscar Operações" --dataEmissaoInicio 2026-05-05 --dataEmissaoFim 2026-05-05
 
 npm --workspace api run dev:dispatcher
 

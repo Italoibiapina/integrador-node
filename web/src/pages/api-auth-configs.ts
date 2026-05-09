@@ -59,8 +59,19 @@ export function renderApiAuthConfigsPage(deps: ApiAuthConfigsPageDeps): HTMLElem
 
           <div class="row" style="margin-top: 10px;">
             <label>
-              URL de Login
-              <input id="loginUrl" required placeholder="https://api.exemplo.com/api/login" />
+              Url Base
+              <input id="baseUrl" placeholder="https://api.exemplo.com" />
+            </label>
+            <label>
+              End-point
+              <input id="loginEndpoint" required placeholder="/api/login" />
+            </label>
+          </div>
+
+          <div class="row" style="margin-top: 10px;">
+            <label>
+              Url Base Alternativa
+              <input id="alternativeBaseUrl" placeholder="https://api-alternativa.exemplo.com" />
             </label>
           </div>
 
@@ -107,11 +118,40 @@ export function renderApiAuthConfigsPage(deps: ApiAuthConfigsPageDeps): HTMLElem
   const idEl = root.querySelector<HTMLInputElement>('#authId')!;
   const nameEl = root.querySelector<HTMLInputElement>('#name')!;
   const authTypeEl = root.querySelector<HTMLSelectElement>('#authType')!;
-  const loginUrlEl = root.querySelector<HTMLInputElement>('#loginUrl')!;
+  const baseUrlEl = root.querySelector<HTMLInputElement>('#baseUrl')!;
+  const loginEndpointEl = root.querySelector<HTMLInputElement>('#loginEndpoint')!;
+  const alternativeBaseUrlEl = root.querySelector<HTMLInputElement>('#alternativeBaseUrl')!;
   const usernameEl = root.querySelector<HTMLInputElement>('#username')!;
   const passwordEl = root.querySelector<HTMLInputElement>('#password')!;
   const loginPayloadEl = root.querySelector<HTMLTextAreaElement>('#loginPayload')!;
   const headersEl = root.querySelector<HTMLTextAreaElement>('#headers')!;
+
+  function splitUrl(value?: string | null): { baseUrl: string; endpoint: string } {
+    const raw = String(value ?? '').trim();
+    if (!raw) return { baseUrl: '', endpoint: '' };
+    try {
+      if (/^https?:\/\//i.test(raw)) {
+        const parsed = new URL(raw);
+        return {
+          baseUrl: parsed.origin,
+          endpoint: `${parsed.pathname}${parsed.search}` || '/',
+        };
+      }
+    } catch {
+      // fallback abaixo
+    }
+    return { baseUrl: '', endpoint: raw };
+  }
+
+  function composeUrl(baseUrl: string, endpoint: string): string {
+    const base = baseUrl.trim();
+    const path = endpoint.trim();
+    if (!path) return '';
+    if (/^https?:\/\//i.test(path)) return path;
+    if (!base) return path;
+    const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+    return new URL(normalizedPath, base).toString();
+  }
 
   async function loadData() {
     try {
@@ -167,11 +207,23 @@ export function renderApiAuthConfigsPage(deps: ApiAuthConfigsPageDeps): HTMLElem
     idEl.value = item?.id || '';
     nameEl.value = item?.name || '';
     authTypeEl.value = item?.auth_type || 'bearer';
-    loginUrlEl.value = item?.base_url || '';
+    const split = splitUrl(item?.base_url);
+    baseUrlEl.value = split.baseUrl;
+    loginEndpointEl.value = split.endpoint;
     usernameEl.value = item?.username || '';
     passwordEl.value = ''; // Password always empty for security, only send if changed
     loginPayloadEl.value = '';
-    headersEl.value = item?.extra_headers ? JSON.stringify(item.extra_headers, null, 2) : '';
+    const currentHeaders: Record<string, unknown> = (item?.extra_headers && typeof item.extra_headers === 'object')
+      ? { ...(item.extra_headers as Record<string, unknown>) }
+      : {};
+    const altBase =
+      (typeof currentHeaders['url-base-alternativa'] === 'string' && String(currentHeaders['url-base-alternativa']).trim()) ||
+      (typeof currentHeaders.urlBaseAlternativa === 'string' && String(currentHeaders.urlBaseAlternativa).trim()) ||
+      '';
+    alternativeBaseUrlEl.value = String(altBase || '');
+    delete currentHeaders['url-base-alternativa'];
+    delete currentHeaders.urlBaseAlternativa;
+    headersEl.value = Object.keys(currentHeaders).length ? JSON.stringify(currentHeaders, null, 2) : '';
     
     modalBackdrop.style.display = 'flex';
   }
@@ -191,7 +243,7 @@ export function renderApiAuthConfigsPage(deps: ApiAuthConfigsPageDeps): HTMLElem
     const payload: any = {
       name: nameEl.value,
       auth_type: authTypeEl.value,
-      base_url: loginUrlEl.value,
+      base_url: composeUrl(baseUrlEl.value, loginEndpointEl.value),
       username: usernameEl.value,
     };
 
@@ -200,7 +252,14 @@ export function renderApiAuthConfigsPage(deps: ApiAuthConfigsPageDeps): HTMLElem
     }
 
     try {
-      if (headersEl.value.trim()) payload.extra_headers = JSON.parse(headersEl.value);
+      const parsedHeaders = headersEl.value.trim() ? JSON.parse(headersEl.value) : {};
+      const safeHeaders: Record<string, unknown> = (parsedHeaders && typeof parsedHeaders === 'object')
+        ? { ...(parsedHeaders as Record<string, unknown>) }
+        : {};
+      const altBase = alternativeBaseUrlEl.value.trim();
+      if (altBase) safeHeaders['url-base-alternativa'] = altBase;
+      else delete safeHeaders['url-base-alternativa'];
+      payload.extra_headers = safeHeaders;
     } catch (err) {
       alert('JSON inválido no campo de Headers.');
       return;

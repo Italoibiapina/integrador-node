@@ -1,5 +1,6 @@
 import axios, { type AxiosRequestConfig } from 'axios';
 import { PrismaClient } from '@prisma/client';
+import { AuthService } from './AuthService.js';
 
 type PendingIntegrationRow = {
   pendingId: bigint;
@@ -72,23 +73,6 @@ function normalizeHeaders(value: unknown): Record<string, string> {
     headers[k] = String(v);
   }
   return headers;
-}
-
-function findTokenInObject(value: unknown): string | null {
-  if (!value || typeof value !== 'object') return null;
-  const obj = value as Record<string, unknown>;
-  const candidates = [
-    obj.token,
-    obj.accessToken,
-    obj.access_token,
-    obj.jwt,
-    (obj.data as Record<string, unknown> | undefined)?.token,
-    (obj.dados as Record<string, unknown> | undefined)?.token,
-  ];
-  for (const candidate of candidates) {
-    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
-  }
-  return null;
 }
 
 function normalizeDateString(value: string): string {
@@ -185,6 +169,7 @@ async function runWithConcurrencyLimit<T>(items: T[], limit: number, handler: (i
 
 export class DispatcherService {
   private readonly prisma: PrismaClient;
+  private readonly authService: AuthService;
   private readonly pollIntervalMs: number;
   private readonly maxConcurrency: number;
   private readonly maxRetries: number;
@@ -193,6 +178,15 @@ export class DispatcherService {
 
   constructor(prisma: PrismaClient, options: DispatcherOptions = {}) {
     this.prisma = prisma;
+    this.authService = new AuthService(async (authId, token, tokenExpiresAt) => {
+      await this.prisma.$executeRaw`
+        UPDATE api_auth_configs
+        SET last_token = ${token},
+            token_expires_at = ${tokenExpiresAt},
+            updated_at = now()
+        WHERE id = ${authId}::uuid
+      `;
+    });
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.maxConcurrency = options.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
     this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
@@ -355,60 +349,20 @@ export class DispatcherService {
   }
 
   private async resolveBearerToken(row: PendingIntegrationRow): Promise<string | null> {
-    const authType = String(row.authType || 'bearer').toLowerCase();
-    if (authType !== 'bearer') {
-      return (row.lastToken ?? '').trim() || null;
+    const token = await this.authService.resolveBearerToken({
+      id: row.authId,
+      authType: row.authType,
+      baseUrl: row.baseUrl,
+      username: row.username,
+      password: row.password,
+      lastToken: row.lastToken,
+      tokenExpiresAt: row.tokenExpiresAt,
+      extraHeaders: row.extraHeaders,
+    });
+    if (token) {
+      row.lastToken = token;
+      row.tokenExpiresAt = null;
     }
-
-    const cachedToken = (row.lastToken ?? '').trim();
-    if (cachedToken && (!row.tokenExpiresAt || row.tokenExpiresAt > new Date())) {
-      return cachedToken;
-    }
-
-    const loginUrl = (row.baseUrl || '').trim();
-    const username = (row.username || '').trim();
-    const password = (row.password || '').trim();
-    if (!loginUrl || !username || !password) {
-      throw new Error(`Configuração de autenticação inválida para auth_id=${row.authId} (base_url/username/password).`);
-    }
-
-    const loginHeaders = normalizeHeaders(row.extraHeaders);
-    delete loginHeaders.Authorization;
-    let token: string | null = null;
-
-    const loginPayloads: Record<string, unknown>[] = [
-      { usuario: username, senha: password, executarLogOffSessaoParelela: false, lojaPadraoId: null },
-      { username, password },
-      { email: username, password },
-    ];
-
-    for (const payload of loginPayloads) {
-      const response = await axios.request({
-        method: 'POST',
-        url: loginUrl,
-        headers: { 'Content-Type': 'application/json', ...loginHeaders },
-        data: payload,
-        timeout: 30_000,
-        validateStatus: () => true,
-      });
-      if (response.status < 200 || response.status >= 300) continue;
-      token = findTokenInObject(response.data);
-      if (token) break;
-    }
-
-    if (!token) {
-      throw new Error(`Falha ao autenticar no destino (auth_id=${row.authId}): token não retornado pelo login.`);
-    }
-
-    await this.prisma.$executeRaw`
-      UPDATE api_auth_configs
-      SET last_token = ${token},
-          token_expires_at = null,
-          updated_at = now()
-      WHERE id = ${row.authId}::uuid
-    `;
-    row.lastToken = token;
-    row.tokenExpiresAt = null;
     return token;
   }
 

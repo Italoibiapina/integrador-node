@@ -15,6 +15,31 @@ function normalizeHeaderValue(value: string): string {
   return value.trim().replace(/^`+|`+$/g, '').trim();
 }
 
+function getAlternativeBaseUrl(extraHeaders: unknown): string | null {
+  if (!extraHeaders || typeof extraHeaders !== 'object') return null;
+  const record = extraHeaders as Record<string, unknown>;
+  const candidate =
+    record['url-base-alternativa'] ??
+    record.urlBaseAlternativa ??
+    record.url_base_alternativa ??
+    record['url-alternativa'] ??
+    record.urlAlternativa ??
+    record.url_alternativa;
+  if (typeof candidate !== 'string') return null;
+  const trimmed = candidate.trim();
+  return trimmed || null;
+}
+
+function buildUrlWithAlternativeBase(primaryUrl: string, alternativeBaseUrl: string | null): string | null {
+  if (!alternativeBaseUrl) return null;
+  try {
+    const parsedPrimary = new URL(primaryUrl);
+    return new URL(`${parsedPrimary.pathname}${parsedPrimary.search}`, alternativeBaseUrl).toString();
+  } catch {
+    return null;
+  }
+}
+
 export class PowerStockAuthService {
   constructor(private repository: ApiServiceRepository) {}
 
@@ -30,8 +55,16 @@ export class PowerStockAuthService {
     for (const [key, value] of Object.entries(requestHeaders)) {
       if (typeof value === 'string') requestHeaders[key] = normalizeHeaderValue(value);
     }
+    delete requestHeaders['url-base-alternativa'];
+    delete requestHeaders.urlBaseAlternativa;
+    delete requestHeaders.url_base_alternativa;
+    delete requestHeaders['url-alternativa'];
+    delete requestHeaders.urlAlternativa;
+    delete requestHeaders.url_alternativa;
+    const alternativeLoginUrl = buildUrlWithAlternativeBase(auth.base_url, getAlternativeBaseUrl(auth.extra_headers));
+    const loginUrls = [auth.base_url, alternativeLoginUrl].filter((v, idx, arr): v is string => Boolean(v) && arr.indexOf(v) === idx);
 
-    const loginAttempt = async (executarLogoffSessaoParalela: boolean): Promise<{
+    const loginAttempt = async (targetUrl: string, executarLogoffSessaoParalela: boolean): Promise<{
       token?: string;
       cookie?: string;
       lojaId?: string;
@@ -44,7 +77,7 @@ export class PowerStockAuthService {
         lojaPadraoId: null,
       };
 
-      const response = await fetch(auth.base_url, {
+      const response = await fetch(targetUrl, {
         method: 'POST',
         headers: requestHeaders,
         body: JSON.stringify(loginPayload),
@@ -83,10 +116,28 @@ export class PowerStockAuthService {
       return { token, cookie: cookie || undefined, lojaId, possuiOutraSessaoAtiva };
     };
 
-    let loginResult = await loginAttempt(false);
-    if (!loginResult.token && loginResult.possuiOutraSessaoAtiva) {
-      await sleep(1000);
-      loginResult = await loginAttempt(true);
+    let loginResult: {
+      token?: string;
+      cookie?: string;
+      lojaId?: string;
+      possuiOutraSessaoAtiva: boolean;
+    } | null = null;
+    let lastError: unknown = null;
+    for (const loginUrl of loginUrls) {
+      try {
+        const firstAttempt = await loginAttempt(loginUrl, false);
+        loginResult = firstAttempt;
+        if (!loginResult.token && loginResult.possuiOutraSessaoAtiva) {
+          await sleep(1000);
+          loginResult = await loginAttempt(loginUrl, true);
+        }
+        if (loginResult) break;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (!loginResult) {
+      throw (lastError instanceof Error ? lastError : new Error('Falha na autenticação: nenhuma URL de login respondeu com sucesso.'));
     }
 
     const token = loginResult.token;

@@ -88,9 +88,15 @@ export function renderApiServicesPage(deps: ApiServicesPageDeps): HTMLElement {
                 <option value="">Selecione...</option>
               </select>
             </label>
+          </div>
+          <div class="row" style="margin-top: 10px;">
             <label>
-              Endpoint da API (URL)
-              <input id="endpointUrl" required placeholder="https://api.exemplo.com/v1/recurso" />
+              Url Base
+              <input id="baseUrl" placeholder="https://api.exemplo.com" />
+            </label>
+            <label>
+              End-point
+              <input id="endpointPath" required placeholder="/v1/recurso" />
             </label>
           </div>
 
@@ -168,7 +174,8 @@ export function renderApiServicesPage(deps: ApiServicesPageDeps): HTMLElement {
   const idViewEl = root.querySelector<HTMLInputElement>('#serviceIdView')!;
   const nameEl = root.querySelector<HTMLInputElement>('#name')!;
   const serviceNameEl = root.querySelector<HTMLSelectElement>('#serviceName')!;
-  const endpointUrlEl = root.querySelector<HTMLInputElement>('#endpointUrl')!;
+  const baseUrlEl = root.querySelector<HTMLInputElement>('#baseUrl')!;
+  const endpointPathEl = root.querySelector<HTMLInputElement>('#endpointPath')!;
   const getParamsRowsEl = root.querySelector<HTMLTableSectionElement>('#getParamsRows')!;
   const btnAddGetParam = root.querySelector<HTMLButtonElement>('#btnAddGetParam')!;
   const descriptionEl = root.querySelector<HTMLTextAreaElement>('#description')!;
@@ -366,13 +373,40 @@ export function renderApiServicesPage(deps: ApiServicesPageDeps): HTMLElement {
     return localDate.toISOString().slice(0, 16);
   }
 
+  function splitEndpointUrl(value?: string | null): { baseUrl: string; endpointPath: string } {
+    const raw = String(value ?? '').trim();
+    if (!raw) return { baseUrl: '', endpointPath: '' };
+    try {
+      if (/^https?:\/\//i.test(raw)) {
+        const parsed = new URL(raw);
+        const endpointPath = `${parsed.pathname}${parsed.search}` || '/';
+        return { baseUrl: parsed.origin, endpointPath };
+      }
+    } catch {
+      // mantém fallback abaixo
+    }
+    return { baseUrl: '', endpointPath: raw };
+  }
+
+  function composeEndpointUrl(baseUrl: string, endpointPath: string): string {
+    const base = baseUrl.trim();
+    const endpoint = endpointPath.trim();
+    if (!endpoint) return '';
+    if (/^https?:\/\//i.test(endpoint)) return endpoint;
+    if (!base) return endpoint;
+    const normalizedPath = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+    return new URL(normalizedPath, base).toString();
+  }
+
   function openModal(item?: ApiService) {
     modalTitle.textContent = item ? 'Editar Serviço' : 'Novo Serviço';
     idEl.value = item?.id || '';
     idViewEl.value = item?.id || '';
     nameEl.value = item?.name || '';
     serviceNameEl.value = item?.service_name || '';
-    endpointUrlEl.value = item?.endpoint_url || '';
+    const endpointParts = splitEndpointUrl(item?.endpoint_url);
+    baseUrlEl.value = endpointParts.baseUrl;
+    endpointPathEl.value = endpointParts.endpointPath;
     const getParams = item?.get_params?.length ? item.get_params : parseLegacyParametroGet(item?.parametro_get);
     getParamsDraft = getParams.map((p) => newGetParamRow({ name: p.name, value_type: p.value_type, value: p.value }));
     renderGetParamsRows();
@@ -426,7 +460,7 @@ export function renderApiServicesPage(deps: ApiServicesPageDeps): HTMLElement {
     const payload = {
       name: nameEl.value,
       service_name: serviceNameEl.value,
-      endpoint_url: endpointUrlEl.value,
+      endpoint_url: composeEndpointUrl(baseUrlEl.value, endpointPathEl.value),
       parametro_get: null,
       get_params: getParams,
       description: descriptionEl.value,

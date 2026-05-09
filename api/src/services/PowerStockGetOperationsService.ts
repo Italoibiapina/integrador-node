@@ -122,9 +122,9 @@ export class PowerStockGetOperationsService {
     return String(op.id ?? op.ID ?? op.codigo ?? '').trim() || null;
   }
 
-  private buildDefaultDetailedPath(service: ApiService, operationId: string): string {
-    const serviceEndpoint = service.endpoint_url?.trim();
-    if (!serviceEndpoint) {
+  private buildDefaultDetailedPath(service: ApiService, operationId: string, baseUrlOverride?: string): string {
+    const serviceEndpoint = baseUrlOverride?.trim() || service.endpoint_url?.trim();
+    if (!serviceEndpoint || !/^https?:\/\//i.test(serviceEndpoint)) {
       return `/api/pedidoorcamentovenda/obter-detalhado?id=${encodeURIComponent(operationId)}`;
     }
     const origin = new URL(serviceEndpoint).origin;
@@ -134,7 +134,8 @@ export class PowerStockGetOperationsService {
   private buildDetailEndpointConfig(
     service: ApiService,
     endpoints: Record<string, ApiEndpointConfig>,
-    operationId: string
+    operationId: string,
+    baseUrlOverride?: string
   ): ApiEndpointConfig {
     const configuredDetail = endpoints['fetch_details'];
     if (configuredDetail) {
@@ -144,12 +145,25 @@ export class PowerStockGetOperationsService {
       } else {
         detailPath = `${detailPath}${detailPath.includes('?') ? '&' : '?'}id=${encodeURIComponent(operationId)}`;
       }
+      if (baseUrlOverride) {
+        try {
+          const baseOrigin = new URL(baseUrlOverride).origin;
+          if (/^https?:\/\//i.test(detailPath)) {
+            const current = new URL(detailPath);
+            detailPath = `${baseOrigin}${current.pathname}${current.search}${current.hash}`;
+          } else {
+            detailPath = new URL(detailPath, baseOrigin).toString();
+          }
+        } catch {
+          // mantém path original se base alternativa estiver inválida
+        }
+      }
       return { ...configuredDetail, method: 'GET', path: detailPath };
     }
 
     return {
       method: 'GET',
-      path: this.buildDefaultDetailedPath(service, operationId),
+      path: this.buildDefaultDetailedPath(service, operationId, baseUrlOverride),
     };
   }
 
@@ -159,6 +173,57 @@ export class PowerStockGetOperationsService {
     const dados = responseObj.dados;
     if (dados && typeof dados === 'object') return dados;
     return detailResponse;
+  }
+
+  private getAlternativeBaseUrl(service: ApiService): string | null {
+    const normalizeKey = (value: string): string => value.trim().toLowerCase().replace(/[_\s]/g, '');
+    const isAlternativeKey = (value: string): boolean => {
+      const normalized = normalizeKey(value);
+      return (
+        normalized === 'urlbasealternativa' ||
+        normalized === 'url-basealternativa' ||
+        normalized === 'url-base-alternativa' ||
+        normalized === 'urlalternativa'
+      );
+    };
+
+    if (service.parametros && typeof service.parametros === 'object') {
+      const params = service.parametros as Record<string, unknown>;
+      const direct =
+        params['url-base-alternativa'] ??
+        params.urlBaseAlternativa ??
+        params.url_base_alternativa ??
+        params.urlAlternativa ??
+        params['url-alternativa'] ??
+        params.url_alternativa;
+      if (typeof direct === 'string' && direct.trim()) {
+        return direct.trim();
+      }
+    }
+
+    const fromGetParams = (service.get_params ?? []).find((param) => {
+      const name = String(param?.name ?? '');
+      return isAlternativeKey(name) && typeof param?.value === 'string' && Boolean(String(param.value).trim());
+    });
+    if (fromGetParams?.value) {
+      return String(fromGetParams.value).trim();
+    }
+
+    return null;
+  }
+
+  private buildEndpointUrlFromBase(service: ApiService, alternativeBaseUrl: string): string | null {
+    const current = service.endpoint_url?.trim();
+    if (!current) return null;
+    try {
+      if (/^https?:\/\//i.test(current)) {
+        const parsed = new URL(current);
+        return new URL(`${parsed.pathname}${parsed.search}`, alternativeBaseUrl).toString();
+      }
+      return new URL(current, alternativeBaseUrl).toString();
+    } catch {
+      return null;
+    }
   }
 
   private resolveRangeDateInput(
@@ -214,14 +279,24 @@ export class PowerStockGetOperationsService {
 
   private buildListUrlFromService(
     service: ApiService,
-    dateRangeParams: { dataEmissaoInicio: string; dataEmissaoFim: string }
+    dateRangeParams: { dataEmissaoInicio: string; dataEmissaoFim: string },
+    endpointOverride?: string
   ): string | null {
-    const endpointUrl = service.endpoint_url?.trim();
+    const endpointUrl = endpointOverride?.trim() || service.endpoint_url?.trim();
     if (!endpointUrl) return null;
 
     const filteredGetParams = (service.get_params ?? []).filter((param) => {
       const normalized = String(param?.name ?? '').trim().toLowerCase();
-      return normalized !== 'dataemissaoinicio' && normalized !== 'dataemissaofim';
+      return (
+        normalized !== 'dataemissaoinicio' &&
+        normalized !== 'dataemissaofim' &&
+        normalized !== 'url-base-alternativa' &&
+        normalized !== 'urlbasealternativa' &&
+        normalized !== 'url_base_alternativa' &&
+        normalized !== 'url-alternativa' &&
+        normalized !== 'urlalternativa' &&
+        normalized !== 'url_alternativa'
+      );
     });
 
     const typedQueryString = buildQueryStringFromGetParams(filteredGetParams, {
@@ -240,7 +315,16 @@ export class PowerStockGetOperationsService {
         .filter(Boolean)
         .filter((line) => {
           const key = line.split('=', 1)[0]?.trim().toLowerCase();
-          return key !== 'dataemissaoinicio' && key !== 'dataemissaofim';
+          return (
+            key !== 'dataemissaoinicio' &&
+            key !== 'dataemissaofim' &&
+            key !== 'url-base-alternativa' &&
+            key !== 'urlbasealternativa' &&
+            key !== 'url_base_alternativa' &&
+            key !== 'url-alternativa' &&
+            key !== 'urlalternativa' &&
+            key !== 'url_alternativa'
+          );
         })
         .join('&');
       if (normalizedParams) {
@@ -313,20 +397,80 @@ export class PowerStockGetOperationsService {
 
       // 2. ETAPA 1: Listagem de Operações (endpoint_url + parametro_get)
       const listUrl = this.buildListUrlFromService(service, dateRangeParams);
+      const alternativeBaseUrl = this.getAlternativeBaseUrl(service);
+      const alternativeEndpointUrl = alternativeBaseUrl
+        ? this.buildEndpointUrlFromBase(service, alternativeBaseUrl)
+        : null;
+      const alternativeListUrl = alternativeEndpointUrl
+        ? this.buildListUrlFromService(service, dateRangeParams, alternativeEndpointUrl)
+        : null;
+      console.log('============================> listagem.urls.resolvidas', {
+        endpointPrincipal: service.endpoint_url ?? null,
+        baseAlternativa: alternativeBaseUrl ?? null,
+        endpointAlternativo: alternativeEndpointUrl ?? null,
+        listUrl,
+        alternativeListUrl,
+      });
       const listConfig = listUrl
         ? ({ path: listUrl, method: 'GET' } as ApiEndpointConfig)
         : endpoints['fetch_operations'];
       if (!listConfig) throw new Error('Endpoint de listagem não configurado (endpoint_url ou fetch_operations)');
 
-      const operationsResponse = await this.executeSubStep(
-        effectiveBatchId,
-        rootExecutionId,
-        service,
-        auth,
-        listConfig,
-        session,
-        'Listagem de Operações'
-      );
+      let operationsResponse: any;
+      try {
+        console.log('============================> listagem.tentativa.primaria', {
+          url: listConfig.path,
+        });
+        operationsResponse = await this.executeSubStep(
+          effectiveBatchId,
+          rootExecutionId,
+          service,
+          auth,
+          listConfig,
+          session,
+          'Listagem de Operações'
+        );
+        console.log('============================> listagem.tentativa.primaria.ok', {
+          url: listConfig.path,
+        });
+      } catch (primaryError) {
+        console.log('============================> listagem.tentativa.primaria.erro', {
+          url: listConfig.path,
+          reason: primaryError instanceof Error ? primaryError.message : String(primaryError),
+        });
+        if (!alternativeListUrl || alternativeListUrl === listUrl) {
+          console.log('============================> listagem.fallback.nao_utilizado', {
+            motivo: !alternativeListUrl ? 'url-alternativa ausente' : 'url-alternativa igual a principal',
+            alternativeListUrl,
+          });
+          throw primaryError;
+        }
+        console.log('============================> listagem.retry.url_alternativa', {
+          primaryUrl: listUrl,
+          alternativeUrl: alternativeListUrl,
+          reason: primaryError instanceof Error ? primaryError.message : String(primaryError),
+        });
+        try {
+          operationsResponse = await this.executeSubStep(
+            effectiveBatchId,
+            rootExecutionId,
+            service,
+            auth,
+            { path: alternativeListUrl, method: 'GET' } as ApiEndpointConfig,
+            session,
+            'Listagem de Operações (url-alternativa)'
+          );
+          console.log('============================> listagem.retry.url_alternativa.ok', {
+            url: alternativeListUrl,
+          });
+        } catch (fallbackError) {
+          console.log('============================> listagem.retry.url_alternativa.erro', {
+            url: alternativeListUrl,
+            reason: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+          });
+          throw fallbackError;
+        }
+      }
 
       // A API pode retornar lista direta ou encapsulada (data/dados/registros/items)
       const operations = this.toArray(
@@ -357,15 +501,36 @@ export class PowerStockGetOperationsService {
           const opId = this.extractOperationId(op);
           if (!opId) continue;
           const detailConfig = this.buildDetailEndpointConfig(service, endpoints, opId);
-          const detailResponse = await this.executeSubStep(
-            effectiveBatchId,
-            rootExecutionId,
-            service,
-            auth,
-            detailConfig,
-            session,
-            `Detalhes da Operação: ${opId}`
-          );
+          let detailResponse: any;
+          try {
+            detailResponse = await this.executeSubStep(
+              effectiveBatchId,
+              rootExecutionId,
+              service,
+              auth,
+              detailConfig,
+              session,
+              `Detalhes da Operação: ${opId}`
+            );
+          } catch (detailPrimaryError) {
+            if (!alternativeBaseUrl) throw detailPrimaryError;
+            const fallbackDetailConfig = this.buildDetailEndpointConfig(service, endpoints, opId, alternativeBaseUrl);
+            console.log('============================> detalhes.retry.url_base_alternativa', {
+              operacaoId: opId,
+              primaryUrl: detailConfig.path,
+              fallbackUrl: fallbackDetailConfig.path,
+              reason: detailPrimaryError instanceof Error ? detailPrimaryError.message : String(detailPrimaryError),
+            });
+            detailResponse = await this.executeSubStep(
+              effectiveBatchId,
+              rootExecutionId,
+              service,
+              auth,
+              fallbackDetailConfig,
+              session,
+              `Detalhes da Operação (url-base-alternativa): ${opId}`
+            );
+          }
 
           results.push(detailResponse);
           const rawPayload = this.extractDetailPayload(detailResponse);
