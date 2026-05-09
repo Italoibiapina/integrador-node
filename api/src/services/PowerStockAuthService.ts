@@ -15,7 +15,9 @@ function normalizeHeaderValue(value: string): string {
   return value.trim().replace(/^`+|`+$/g, '').trim();
 }
 
-function getAlternativeBaseUrl(extraHeaders: unknown): string | null {
+function getAlternativeBaseUrl(extraHeaders: unknown, explicitAlternative?: string | null): string | null {
+  const explicit = (explicitAlternative ?? '').trim();
+  if (explicit) return explicit;
   if (!extraHeaders || typeof extraHeaders !== 'object') return null;
   const record = extraHeaders as Record<string, unknown>;
   const candidate =
@@ -61,7 +63,10 @@ export class PowerStockAuthService {
     delete requestHeaders['url-alternativa'];
     delete requestHeaders.urlAlternativa;
     delete requestHeaders.url_alternativa;
-    const alternativeLoginUrl = buildUrlWithAlternativeBase(auth.base_url, getAlternativeBaseUrl(auth.extra_headers));
+    const alternativeLoginUrl = buildUrlWithAlternativeBase(
+      auth.base_url,
+      getAlternativeBaseUrl(auth.extra_headers, auth.base_url_alternativa)
+    );
     const loginUrls = [auth.base_url, alternativeLoginUrl].filter((v, idx, arr): v is string => Boolean(v) && arr.indexOf(v) === idx);
 
     const loginAttempt = async (targetUrl: string, executarLogoffSessaoParalela: boolean): Promise<{

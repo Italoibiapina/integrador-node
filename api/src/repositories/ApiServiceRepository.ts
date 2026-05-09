@@ -137,13 +137,14 @@ export class ApiServiceRepository {
     const getParams = this.normalizeGetParams(data.get_params);
     const row = await this.db.tx<ApiService>(async (client) => {
       const result = await client.query<ApiService>(
-        `INSERT INTO api_services (name, description, auth_config_id, endpoint_url, service_name, parametro_get, parametros, is_active, current_status, last_run_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+        `INSERT INTO api_services (name, description, auth_config_id, endpoint_url, base_url_alternativa, service_name, parametro_get, parametros, is_active, current_status, last_run_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
         [
           data.name,
           data.description,
           data.auth_config_id,
           data.endpoint_url ?? null,
+          data.base_url_alternativa ?? null,
           data.service_name ?? null,
           data.parametro_get ?? null,
           parametros ? JSON.stringify(parametros) : null,
@@ -173,12 +174,13 @@ export class ApiServiceRepository {
              description = COALESCE($3, description), 
              auth_config_id = COALESCE($4, auth_config_id), 
              endpoint_url = COALESCE($5, endpoint_url),
-             service_name = COALESCE($6, service_name),
-             parametro_get = COALESCE($7, parametro_get),
-             parametros = CASE WHEN $8 THEN $9 ELSE parametros END,
-             is_active = COALESCE($10, is_active),
-             current_status = COALESCE($11, current_status),
-             last_run_at = COALESCE($12, last_run_at),
+             base_url_alternativa = COALESCE($6, base_url_alternativa),
+             service_name = COALESCE($7, service_name),
+             parametro_get = COALESCE($8, parametro_get),
+             parametros = CASE WHEN $9 THEN $10 ELSE parametros END,
+             is_active = COALESCE($11, is_active),
+             current_status = COALESCE($12, current_status),
+             last_run_at = COALESCE($13, last_run_at),
              updated_at = now()
          WHERE id = $1 RETURNING *`,
         [
@@ -187,6 +189,7 @@ export class ApiServiceRepository {
           data.description,
           data.auth_config_id,
           data.endpoint_url,
+          data.base_url_alternativa,
           data.service_name,
           data.parametro_get,
           hasParametros,
@@ -259,12 +262,13 @@ export class ApiServiceRepository {
 
   async createAuthConfig(data: Partial<ApiAuthConfig>): Promise<ApiAuthConfig> {
     const result = await this.db.query<ApiAuthConfig>(
-      `INSERT INTO api_auth_configs (name, auth_type, base_url, username, password, extra_headers)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      `INSERT INTO api_auth_configs (name, auth_type, base_url, base_url_alternativa, username, password, extra_headers)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
       [
         data.name,
         data.auth_type ?? 'bearer',
         data.base_url,
+        data.base_url_alternativa ?? null,
         data.username,
         data.password,
         data.extra_headers ? JSON.stringify(data.extra_headers) : '{}',
@@ -281,9 +285,10 @@ export class ApiServiceRepository {
        SET name = COALESCE($2, name), 
            auth_type = COALESCE($3, auth_type),
            base_url = COALESCE($4, base_url), 
-           username = COALESCE($5, username), 
-           password = COALESCE($6, password), 
-           extra_headers = COALESCE($7, extra_headers),
+           base_url_alternativa = COALESCE($5, base_url_alternativa),
+           username = COALESCE($6, username), 
+           password = COALESCE($7, password), 
+           extra_headers = COALESCE($8, extra_headers),
            updated_at = now()
        WHERE id = $1 RETURNING *`,
       [
@@ -291,6 +296,7 @@ export class ApiServiceRepository {
         data.name,
         data.auth_type,
         data.base_url,
+        data.base_url_alternativa,
         data.username,
         data.password,
         data.extra_headers ? JSON.stringify(data.extra_headers) : null,

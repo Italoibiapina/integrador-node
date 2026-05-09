@@ -8,6 +8,7 @@ export interface ApiAuthConfig {
   name: string;
   auth_type?: string;
   base_url: string;
+  base_url_alternativa?: string | null;
   username?: string;
   password?: string;
   last_token?: string;
@@ -32,6 +33,7 @@ export interface ApiService {
   name: string;
   service_name?: string;
   endpoint_url?: string;
+  base_url_alternativa?: string | null;
   parametro_get?: string | null;
   description?: string;
   is_active: boolean;

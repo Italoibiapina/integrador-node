@@ -99,6 +99,12 @@ export function renderApiServicesPage(deps: ApiServicesPageDeps): HTMLElement {
               <input id="endpointPath" required placeholder="/v1/recurso" />
             </label>
           </div>
+          <div class="row" style="margin-top: 10px;">
+            <label>
+              Url Base Alternativa
+              <input id="alternativeBaseUrl" placeholder="https://api-alternativa.exemplo.com" />
+            </label>
+          </div>
 
           <div style="margin-top: 10px;">
             <h3 style="margin: 0 0 8px; font-size: 14px;">Parâmetros GET</h3>
@@ -176,6 +182,7 @@ export function renderApiServicesPage(deps: ApiServicesPageDeps): HTMLElement {
   const serviceNameEl = root.querySelector<HTMLSelectElement>('#serviceName')!;
   const baseUrlEl = root.querySelector<HTMLInputElement>('#baseUrl')!;
   const endpointPathEl = root.querySelector<HTMLInputElement>('#endpointPath')!;
+  const alternativeBaseUrlEl = root.querySelector<HTMLInputElement>('#alternativeBaseUrl')!;
   const getParamsRowsEl = root.querySelector<HTMLTableSectionElement>('#getParamsRows')!;
   const btnAddGetParam = root.querySelector<HTMLButtonElement>('#btnAddGetParam')!;
   const descriptionEl = root.querySelector<HTMLTextAreaElement>('#description')!;
@@ -407,6 +414,7 @@ export function renderApiServicesPage(deps: ApiServicesPageDeps): HTMLElement {
     const endpointParts = splitEndpointUrl(item?.endpoint_url);
     baseUrlEl.value = endpointParts.baseUrl;
     endpointPathEl.value = endpointParts.endpointPath;
+    alternativeBaseUrlEl.value = item?.base_url_alternativa || '';
     const getParams = item?.get_params?.length ? item.get_params : parseLegacyParametroGet(item?.parametro_get);
     getParamsDraft = getParams.map((p) => newGetParamRow({ name: p.name, value_type: p.value_type, value: p.value }));
     renderGetParamsRows();
@@ -461,6 +469,7 @@ export function renderApiServicesPage(deps: ApiServicesPageDeps): HTMLElement {
       name: nameEl.value,
       service_name: serviceNameEl.value,
       endpoint_url: composeEndpointUrl(baseUrlEl.value, endpointPathEl.value),
+      base_url_alternativa: alternativeBaseUrlEl.value.trim() || null,
       parametro_get: null,
       get_params: getParams,
       description: descriptionEl.value,

@@ -213,17 +213,8 @@ export function renderApiAuthConfigsPage(deps: ApiAuthConfigsPageDeps): HTMLElem
     usernameEl.value = item?.username || '';
     passwordEl.value = ''; // Password always empty for security, only send if changed
     loginPayloadEl.value = '';
-    const currentHeaders: Record<string, unknown> = (item?.extra_headers && typeof item.extra_headers === 'object')
-      ? { ...(item.extra_headers as Record<string, unknown>) }
-      : {};
-    const altBase =
-      (typeof currentHeaders['url-base-alternativa'] === 'string' && String(currentHeaders['url-base-alternativa']).trim()) ||
-      (typeof currentHeaders.urlBaseAlternativa === 'string' && String(currentHeaders.urlBaseAlternativa).trim()) ||
-      '';
-    alternativeBaseUrlEl.value = String(altBase || '');
-    delete currentHeaders['url-base-alternativa'];
-    delete currentHeaders.urlBaseAlternativa;
-    headersEl.value = Object.keys(currentHeaders).length ? JSON.stringify(currentHeaders, null, 2) : '';
+    alternativeBaseUrlEl.value = item?.base_url_alternativa || '';
+    headersEl.value = item?.extra_headers ? JSON.stringify(item.extra_headers, null, 2) : '';
     
     modalBackdrop.style.display = 'flex';
   }
@@ -244,6 +235,7 @@ export function renderApiAuthConfigsPage(deps: ApiAuthConfigsPageDeps): HTMLElem
       name: nameEl.value,
       auth_type: authTypeEl.value,
       base_url: composeUrl(baseUrlEl.value, loginEndpointEl.value),
+      base_url_alternativa: alternativeBaseUrlEl.value.trim() || null,
       username: usernameEl.value,
     };
 
@@ -253,13 +245,9 @@ export function renderApiAuthConfigsPage(deps: ApiAuthConfigsPageDeps): HTMLElem
 
     try {
       const parsedHeaders = headersEl.value.trim() ? JSON.parse(headersEl.value) : {};
-      const safeHeaders: Record<string, unknown> = (parsedHeaders && typeof parsedHeaders === 'object')
-        ? { ...(parsedHeaders as Record<string, unknown>) }
+      payload.extra_headers = (parsedHeaders && typeof parsedHeaders === 'object')
+        ? parsedHeaders
         : {};
-      const altBase = alternativeBaseUrlEl.value.trim();
-      if (altBase) safeHeaders['url-base-alternativa'] = altBase;
-      else delete safeHeaders['url-base-alternativa'];
-      payload.extra_headers = safeHeaders;
     } catch (err) {
       alert('JSON inválido no campo de Headers.');
       return;

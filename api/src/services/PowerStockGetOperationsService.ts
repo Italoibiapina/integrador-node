@@ -176,40 +176,7 @@ export class PowerStockGetOperationsService {
   }
 
   private getAlternativeBaseUrl(service: ApiService): string | null {
-    const normalizeKey = (value: string): string => value.trim().toLowerCase().replace(/[_\s]/g, '');
-    const isAlternativeKey = (value: string): boolean => {
-      const normalized = normalizeKey(value);
-      return (
-        normalized === 'urlbasealternativa' ||
-        normalized === 'url-basealternativa' ||
-        normalized === 'url-base-alternativa' ||
-        normalized === 'urlalternativa'
-      );
-    };
-
-    if (service.parametros && typeof service.parametros === 'object') {
-      const params = service.parametros as Record<string, unknown>;
-      const direct =
-        params['url-base-alternativa'] ??
-        params.urlBaseAlternativa ??
-        params.url_base_alternativa ??
-        params.urlAlternativa ??
-        params['url-alternativa'] ??
-        params.url_alternativa;
-      if (typeof direct === 'string' && direct.trim()) {
-        return direct.trim();
-      }
-    }
-
-    const fromGetParams = (service.get_params ?? []).find((param) => {
-      const name = String(param?.name ?? '');
-      return isAlternativeKey(name) && typeof param?.value === 'string' && Boolean(String(param.value).trim());
-    });
-    if (fromGetParams?.value) {
-      return String(fromGetParams.value).trim();
-    }
-
-    return null;
+    return (service.base_url_alternativa ?? '').trim() || null;
   }
 
   private buildEndpointUrlFromBase(service: ApiService, alternativeBaseUrl: string): string | null {

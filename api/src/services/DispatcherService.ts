@@ -14,6 +14,7 @@ type PendingIntegrationRow = {
   authId: string;
   authType: string | null;
   baseUrl: string;
+  baseUrlAlternativa: string | null;
   username: string | null;
   password: string | null;
   lastToken: string | null;
@@ -331,6 +332,7 @@ export class DispatcherService {
         aac.id::text AS "authId",
         aac.auth_type AS "authType",
         aac.base_url AS "baseUrl",
+        aac.base_url_alternativa AS "baseUrlAlternativa",
         aac.username AS "username",
         aac.password AS "password",
         aac.last_token AS "lastToken",
@@ -353,6 +355,7 @@ export class DispatcherService {
       id: row.authId,
       authType: row.authType,
       baseUrl: row.baseUrl,
+      alternativeBaseUrl: row.baseUrlAlternativa,
       username: row.username,
       password: row.password,
       lastToken: row.lastToken,

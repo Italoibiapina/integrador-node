@@ -4,6 +4,7 @@ export type GenericAuthInput = {
   id: string;
   authType?: string | null;
   baseUrl: string;
+  alternativeBaseUrl?: string | null;
   username?: string | null;
   password?: string | null;
   lastToken?: string | null;
@@ -42,7 +43,9 @@ function normalizeHeaders(value: unknown): Record<string, string> {
   return headers;
 }
 
-function getAlternativeBaseUrl(extraHeaders: unknown): string | null {
+function getAlternativeBaseUrl(extraHeaders: unknown, explicitAlternative?: string | null): string | null {
+  const explicit = (explicitAlternative ?? '').trim();
+  if (explicit) return explicit;
   if (!extraHeaders || typeof extraHeaders !== 'object') return null;
   const record = extraHeaders as Record<string, unknown>;
   const candidate =
@@ -108,7 +111,10 @@ export class AuthService {
 
     const loginHeaders = normalizeHeaders(auth.extraHeaders);
     delete loginHeaders.Authorization;
-    const alternativeLoginUrl = buildUrlWithAlternativeBase(loginUrl, getAlternativeBaseUrl(auth.extraHeaders));
+    const alternativeLoginUrl = buildUrlWithAlternativeBase(
+      loginUrl,
+      getAlternativeBaseUrl(auth.extraHeaders, auth.alternativeBaseUrl)
+    );
     const loginUrls = [loginUrl, alternativeLoginUrl].filter((v, idx, arr): v is string => Boolean(v) && arr.indexOf(v) === idx);
 
     const loginPayloads: Record<string, unknown>[] = [
@@ -153,7 +159,10 @@ export class AuthService {
       'Content-Type': 'application/json',
       ...normalizeHeaders(auth.extraHeaders),
     };
-    const alternativeLoginUrl = buildUrlWithAlternativeBase(auth.baseUrl, getAlternativeBaseUrl(auth.extraHeaders));
+    const alternativeLoginUrl = buildUrlWithAlternativeBase(
+      auth.baseUrl,
+      getAlternativeBaseUrl(auth.extraHeaders, auth.alternativeBaseUrl)
+    );
     const loginUrls = [auth.baseUrl, alternativeLoginUrl].filter((v, idx, arr): v is string => Boolean(v) && arr.indexOf(v) === idx);
 
     const loginAttempt = async (targetUrl: string, executarLogoffSessaoParalela: boolean): Promise<{
