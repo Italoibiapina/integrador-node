@@ -45,8 +45,9 @@ function buildUrlWithAlternativeBase(primaryUrl: string, alternativeBaseUrl: str
 export class PowerStockAuthService {
   constructor(private repository: ApiServiceRepository) {}
 
-  async ensureAuthenticated(auth: ApiAuthConfig): Promise<PowerStockAuthSession> {
-    if (auth.last_token && auth.token_expires_at && auth.token_expires_at > new Date()) {
+  async ensureAuthenticated(auth: ApiAuthConfig, options?: { force?: boolean }): Promise<PowerStockAuthSession> {
+    const force = options?.force === true;
+    if (!force && auth.last_token && auth.token_expires_at && auth.token_expires_at > new Date()) {
       return { token: auth.last_token };
     }
 

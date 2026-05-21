@@ -36,6 +36,7 @@ type DispatcherRunContext = {
 
 type PendingProcessResult = {
   pendingId: bigint;
+  sistemaNome: string;
   status: 'success' | 'error';
   detail?: string;
 };
@@ -224,16 +225,34 @@ export class DispatcherService {
       pending_count: rows.length,
     });
     if (rows.length === 0) {
+      if (context.batchId) {
+        await this.mergeBatchRawResponse(context.batchId, {
+          total_pending_selected: 0,
+          processed: 0,
+          success: 0,
+          error: 0,
+          destinos: [],
+        });
+      }
       if (context.executionId) {
         await this.finishDispatcherExecution(context.executionId, 'success', undefined, {
           total_pending_selected: 0,
           processed: 0,
           success: 0,
           error: 0,
+          destinos: [],
         });
       }
       console.log('============================> dispatcher.batch.empty');
       return;
+    }
+
+    const destinoStats = new Map<string, { selected: number; success: number; error: number }>();
+    for (const row of rows) {
+      const key = String(row.sistemaNome || '').trim() || '(sem-nome)';
+      const current = destinoStats.get(key) ?? { selected: 0, success: 0, error: 0 };
+      current.selected += 1;
+      destinoStats.set(key, current);
     }
 
     const batchId = context.batchId || await this.createDispatcherBatch(rows.length);
@@ -277,11 +296,32 @@ export class DispatcherService {
         finalStatus,
       });
 
+      for (const r of results) {
+        const key = String(r.sistemaNome || '').trim() || '(sem-nome)';
+        const current = destinoStats.get(key) ?? { selected: 0, success: 0, error: 0 };
+        if (r.status === 'success') current.success += 1;
+        else current.error += 1;
+        destinoStats.set(key, current);
+      }
+
+      const destinos = Array.from(destinoStats.entries())
+        .map(([sistema_nome, stats]) => ({ sistema_nome, ...stats }))
+        .sort((a, b) => a.sistema_nome.localeCompare(b.sistema_nome));
+
+      await this.mergeBatchRawResponse(batchId, {
+        total_pending_selected: rows.length,
+        processed: results.length,
+        success: successCount,
+        error: errorCount,
+        destinos,
+      });
+
       await this.finishDispatcherExecution(executionId, finalStatus, undefined, {
         total_pending_selected: rows.length,
         processed: results.length,
         success: successCount,
         error: errorCount,
+        destinos,
       });
 
       if (!context.batchId) {
@@ -290,23 +330,49 @@ export class DispatcherService {
           processed: results.length,
           success: successCount,
           error: errorCount,
+          destinos,
         });
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.log('============================> dispatcher.batch.error', { message });
+
+      for (const r of results) {
+        const key = String(r.sistemaNome || '').trim() || '(sem-nome)';
+        const current = destinoStats.get(key) ?? { selected: 0, success: 0, error: 0 };
+        if (r.status === 'success') current.success += 1;
+        else current.error += 1;
+        destinoStats.set(key, current);
+      }
+      const destinos = Array.from(destinoStats.entries())
+        .map(([sistema_nome, stats]) => ({ sistema_nome, ...stats }))
+        .sort((a, b) => a.sistema_nome.localeCompare(b.sistema_nome));
+
+      const successCount = results.filter((r) => r.status === 'success').length;
+      const errorCount = results.filter((r) => r.status === 'error').length;
+
+      await this.mergeBatchRawResponse(batchId, {
+        total_pending_selected: rows.length,
+        processed: results.length,
+        success: successCount,
+        error: errorCount,
+        destinos,
+      });
+
       await this.finishDispatcherExecution(executionId, 'failed', message, {
         total_pending_selected: rows.length,
         processed: results.length,
-        success: results.filter((r) => r.status === 'success').length,
-        error: results.filter((r) => r.status === 'error').length,
+        success: successCount,
+        error: errorCount,
+        destinos,
       });
       if (!context.batchId) {
         await this.finishDispatcherBatch(batchId, 'failed', message, {
           total_pending_selected: rows.length,
           processed: results.length,
-          success: results.filter((r) => r.status === 'success').length,
-          error: results.filter((r) => r.status === 'error').length,
+          success: successCount,
+          error: errorCount,
+          destinos,
         });
       }
       throw error;
@@ -373,7 +439,7 @@ export class DispatcherService {
     const method = String(row.metodo || 'POST').toUpperCase();
     if (!VALID_METHODS.has(method)) {
       await this.markError(row.pendingId, row.tentativas, `Método HTTP não suportado: ${method}`);
-      return { pendingId: row.pendingId, status: 'error', detail: `Método inválido: ${method}` };
+      return { pendingId: row.pendingId, sistemaNome: row.sistemaNome, status: 'error', detail: `Método inválido: ${method}` };
     }
 
     let safePayload: unknown = null;
@@ -424,7 +490,7 @@ export class DispatcherService {
           pendingId: row.pendingId.toString(),
           status: response.status,
         });
-        return { pendingId: row.pendingId, status: 'success' };
+        return { pendingId: row.pendingId, sistemaNome: row.sistemaNome, status: 'success' };
       }
 
       const bodyText = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
@@ -440,7 +506,7 @@ export class DispatcherService {
         message: errorMessage,
         payloadPreview: stringifyForLog(safePayload),
       });
-      return { pendingId: row.pendingId, status: 'error', detail: errorMessage };
+      return { pendingId: row.pendingId, sistemaNome: row.sistemaNome, status: 'error', detail: errorMessage };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       await this.markError(row.pendingId, row.tentativas, message);
@@ -449,7 +515,7 @@ export class DispatcherService {
         message,
         payloadPreview: stringifyForLog(safePayload),
       });
-      return { pendingId: row.pendingId, status: 'error', detail: message };
+      return { pendingId: row.pendingId, sistemaNome: row.sistemaNome, status: 'error', detail: message };
     }
   }
 
@@ -469,6 +535,14 @@ export class DispatcherService {
     const row = rows[0];
     if (!row?.id) throw new Error('Falha ao criar batch do DispatcherService.');
     return row.id;
+  }
+
+  private async mergeBatchRawResponse(batchId: string, rawResponse: Record<string, unknown>): Promise<void> {
+    await this.prisma.$executeRaw`
+      UPDATE api_batches
+      SET raw_response = COALESCE(raw_response, '{}'::jsonb) || ${JSON.stringify(rawResponse)}::jsonb
+      WHERE id = ${batchId}::uuid
+    `;
   }
 
   private async createDispatcherExecution(batchId: string, explicitServiceId?: string): Promise<string> {

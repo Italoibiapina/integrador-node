@@ -64,6 +64,16 @@ export class ApiServiceRepository {
       .filter((item): item is ApiServiceGetParam => Boolean(item));
   }
 
+  private normalizeDestinoIds(ids: unknown): number[] {
+    if (!Array.isArray(ids)) return [];
+    const unique = new Set<number>();
+    for (const raw of ids) {
+      const parsed = typeof raw === 'number' ? raw : Number(String(raw));
+      if (Number.isInteger(parsed) && parsed > 0) unique.add(parsed);
+    }
+    return Array.from(unique);
+  }
+
   private async listServiceGetParams(serviceIds: string[]): Promise<Map<string, ApiServiceGetParam[]>> {
     const byService = new Map<string, ApiServiceGetParam[]>();
     if (!serviceIds.length) return byService;
@@ -89,6 +99,24 @@ export class ApiServiceRepository {
     return byService;
   }
 
+  private async listServiceDestinoIds(serviceIds: string[]): Promise<Map<string, number[]>> {
+    const byService = new Map<string, number[]>();
+    if (!serviceIds.length) return byService;
+    const result = await this.db.query<{ api_service_id: string; sistema_destino_config_id: number }>(
+      `SELECT api_service_id, sistema_destino_config_id
+       FROM api_service_destinos
+       WHERE api_service_id = ANY($1::uuid[])
+       ORDER BY api_service_id, sistema_destino_config_id`,
+      [serviceIds]
+    );
+    for (const row of result.rows) {
+      const arr = byService.get(row.api_service_id) ?? [];
+      arr.push(row.sistema_destino_config_id);
+      byService.set(row.api_service_id, arr);
+    }
+    return byService;
+  }
+
   private async replaceServiceGetParams(client: { query: Db['query'] }, serviceId: string, params: ApiServiceGetParam[]): Promise<void> {
     await client.query('DELETE FROM api_service_get_params WHERE service_id = $1', [serviceId]);
     for (let i = 0; i < params.length; i += 1) {
@@ -101,13 +129,29 @@ export class ApiServiceRepository {
     }
   }
 
+  private async replaceServiceDestinos(client: { query: Db['query'] }, serviceId: string, destinoIds: number[]): Promise<void> {
+    await client.query('DELETE FROM api_service_destinos WHERE api_service_id = $1', [serviceId]);
+    for (const destinoId of destinoIds) {
+      await client.query(
+        `INSERT INTO api_service_destinos (api_service_id, sistema_destino_config_id)
+         VALUES ($1, $2)`,
+        [serviceId, destinoId]
+      );
+    }
+  }
+
   // --- Services ---
 
   async listServices(): Promise<ApiService[]> {
     const result = await this.db.query<ApiService>('SELECT * FROM api_services ORDER BY created_at DESC');
     const services = result.rows;
     const paramsByService = await this.listServiceGetParams(services.map((s) => s.id));
-    return services.map((service) => ({ ...service, get_params: paramsByService.get(service.id) ?? [] }));
+    const destinosByService = await this.listServiceDestinoIds(services.map((s) => s.id));
+    return services.map((service) => ({
+      ...service,
+      get_params: paramsByService.get(service.id) ?? [],
+      destino_ids: destinosByService.get(service.id) ?? [],
+    }));
   }
 
   async getServiceById(id: string): Promise<ApiService | null> {
@@ -115,7 +159,12 @@ export class ApiServiceRepository {
     const service = result.rows[0] || null;
     if (!service) return null;
     const paramsByService = await this.listServiceGetParams([service.id]);
-    return { ...service, get_params: paramsByService.get(service.id) ?? [] };
+    const destinosByService = await this.listServiceDestinoIds([service.id]);
+    return {
+      ...service,
+      get_params: paramsByService.get(service.id) ?? [],
+      destino_ids: destinosByService.get(service.id) ?? [],
+    };
   }
 
   async getServiceByServiceName(serviceName: string): Promise<ApiService | null> {
@@ -129,12 +178,18 @@ export class ApiServiceRepository {
     const service = result.rows[0] || null;
     if (!service) return null;
     const paramsByService = await this.listServiceGetParams([service.id]);
-    return { ...service, get_params: paramsByService.get(service.id) ?? [] };
+    const destinosByService = await this.listServiceDestinoIds([service.id]);
+    return {
+      ...service,
+      get_params: paramsByService.get(service.id) ?? [],
+      destino_ids: destinosByService.get(service.id) ?? [],
+    };
   }
 
   async createService(data: Partial<ApiService>): Promise<ApiService> {
     const parametros = data.parametros ?? data.endpoints;
     const getParams = this.normalizeGetParams(data.get_params);
+    const destinoIds = this.normalizeDestinoIds(data.destino_ids);
     const row = await this.db.tx<ApiService>(async (client) => {
       const result = await client.query<ApiService>(
         `INSERT INTO api_services (name, description, auth_config_id, endpoint_url, base_url_alternativa, service_name, parametro_get, parametros, is_active, current_status, last_run_at)
@@ -156,9 +211,10 @@ export class ApiServiceRepository {
       const created = result.rows[0];
       if (!created) throw new Error('Falha ao criar serviço');
       await this.replaceServiceGetParams(client as unknown as { query: Db['query'] }, created.id, getParams);
+      await this.replaceServiceDestinos(client as unknown as { query: Db['query'] }, created.id, destinoIds);
       return created;
     });
-    return { ...row, get_params: getParams };
+    return { ...row, get_params: getParams, destino_ids: destinoIds };
   }
 
   async updateService(id: string, data: Partial<ApiService>): Promise<ApiService | null> {
@@ -166,7 +222,9 @@ export class ApiServiceRepository {
     const hasParametros = Object.prototype.hasOwnProperty.call(data, 'parametros') ||
       Object.prototype.hasOwnProperty.call(data, 'endpoints');
     const hasGetParams = Object.prototype.hasOwnProperty.call(data, 'get_params');
+    const hasDestinos = Object.prototype.hasOwnProperty.call(data, 'destino_ids');
     const getParams = this.normalizeGetParams(data.get_params);
+    const destinoIds = this.normalizeDestinoIds(data.destino_ids);
     return await this.db.tx<ApiService | null>(async (client) => {
       const result = await client.query<ApiService>(
         `UPDATE api_services 
@@ -208,6 +266,13 @@ export class ApiServiceRepository {
         const paramsByService = await this.listServiceGetParams([id]);
         updated.get_params = paramsByService.get(id) ?? [];
       }
+      if (hasDestinos) {
+        await this.replaceServiceDestinos(client as unknown as { query: Db['query'] }, id, destinoIds);
+        updated.destino_ids = destinoIds;
+      } else {
+        const destinosByService = await this.listServiceDestinoIds([id]);
+        updated.destino_ids = destinosByService.get(id) ?? [];
+      }
       return updated;
     });
   }
@@ -226,7 +291,12 @@ export class ApiServiceRepository {
     await this.db.query(query, params);
   }
 
-  async insertOperacaoRawIfChanged(idVendaExterno: string, payload: unknown, hashPayload: string): Promise<boolean> {
+  async insertOperacaoRawIfChanged(
+    idVendaExterno: string,
+    payload: unknown,
+    hashPayload: string,
+    sourceServiceId?: string | null
+  ): Promise<number | null> {
     const result = await this.db.query<{ id: number }>(
       `WITH ultimo AS (
          SELECT hash_payload
@@ -235,17 +305,21 @@ export class ApiServiceRepository {
          ORDER BY data_extracao DESC, id DESC
          LIMIT 1
        )
-       INSERT INTO operacoes_raw (id_venda_externo, payload, hash_payload, status_processamento)
-       SELECT $1, $2::jsonb, $3, 'pendente'
+       INSERT INTO operacoes_raw (id_venda_externo, payload, hash_payload, status_processamento, source_service_id)
+       SELECT $1, $2::jsonb, $3, 'pendente', $4::uuid
        WHERE NOT EXISTS (
          SELECT 1
          FROM ultimo
          WHERE ultimo.hash_payload = $3
        )
        RETURNING id`,
-      [idVendaExterno, JSON.stringify(payload), hashPayload]
+      [idVendaExterno, JSON.stringify(payload), hashPayload, sourceServiceId ?? null]
     );
-    return (result.rowCount ?? 0) > 0;
+    return result.rows[0]?.id ?? null;
+  }
+
+  async processOperacaoRaw(rawId: number): Promise<void> {
+    await this.db.query('SELECT fn_processar_operacao_venda_powerstock($1)', [rawId]);
   }
 
   // --- Auth Configs ---
@@ -429,7 +503,7 @@ export class ApiServiceRepository {
     const result = await this.db.query<{ id: string }>(
       `INSERT INTO api_batches 
        (trigger_type, name, description, is_active, endpoints, auth_config_id) 
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6) RETURNING id`,
       [
         triggerType, 
         snapshot?.name, 
@@ -445,9 +519,15 @@ export class ApiServiceRepository {
   }
 
   async finishBatch(id: string, status: ApiBatch['status'], errorMessage?: string, rawResponse?: any): Promise<void> {
+    const rawResponseJson = rawResponse === undefined ? null : JSON.stringify(rawResponse);
     await this.db.query(
-      'UPDATE api_batches SET status = $2, error_message = $3, raw_response = $4, finished_at = now() WHERE id = $1',
-      [id, status, errorMessage, rawResponse ? JSON.stringify(rawResponse) : null]
+      `UPDATE api_batches
+       SET status = $2,
+           error_message = $3,
+           raw_response = COALESCE(raw_response, '{}'::jsonb) || COALESCE($4::jsonb, '{}'::jsonb),
+           finished_at = now()
+       WHERE id = $1`,
+      [id, status, errorMessage, rawResponseJson]
     );
   }
 
@@ -497,10 +577,11 @@ export class ApiServiceRepository {
   }
 
   async createServiceExecution(execution: Omit<ApiServiceExecution, 'id' | 'created_at'>): Promise<string> {
+    const rawResponseJson = execution.raw_response === undefined ? null : JSON.stringify(execution.raw_response);
     const result = await this.db.query<{ id: string }>(
       `INSERT INTO api_service_executions 
        (batch_id, service_id, parent_execution_id, snapshot_config, started_at, status, error_message, raw_response)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+       VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8::jsonb) RETURNING id`,
       [
         execution.batch_id, 
         execution.service_id, 
@@ -509,7 +590,7 @@ export class ApiServiceRepository {
         execution.started_at, 
         execution.status, 
         execution.error_message, 
-        execution.raw_response
+        rawResponseJson
       ]
     );
     const row = result.rows[0];
@@ -524,11 +605,12 @@ export class ApiServiceRepository {
     rawResponse?: any, 
     errorMessage?: string
   ): Promise<void> {
+    const rawResponseJson = rawResponse === undefined ? null : JSON.stringify(rawResponse);
     await this.db.query(
       `UPDATE api_service_executions 
-       SET status = $2, finished_at = $3, raw_response = $4, error_message = $5 
+       SET status = $2, finished_at = $3, raw_response = $4::jsonb, error_message = $5 
        WHERE id = $1`,
-      [id, status, finishedAt, rawResponse, errorMessage]
+      [id, status, finishedAt, rawResponseJson, errorMessage]
     );
   }
 }

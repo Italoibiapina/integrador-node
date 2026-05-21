@@ -34,6 +34,7 @@ export interface ApiService {
   service_name?: string;
   endpoint_url?: string;
   base_url_alternativa?: string | null;
+  destino_ids?: number[];
   parametro_get?: string | null;
   description?: string;
   is_active: boolean;

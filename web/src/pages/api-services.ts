@@ -1,4 +1,4 @@
-import { ApiService, ApiServiceGetParam } from '../../../api/src/services/apiIntegrationTypes';
+import { ApiService, ApiServiceGetParam, SistemaDestinoConfig } from '../../../api/src/services/apiIntegrationTypes';
 
 export type ApiServicesPageDeps = {
   api: <T = unknown>(path: string, init?: RequestInit) => Promise<T>;
@@ -9,6 +9,7 @@ export function renderApiServicesPage(deps: ApiServicesPageDeps): HTMLElement {
   root.className = 'content';
   let authConfigs: Array<{ id: string; name: string }> = [];
   let availableServices: string[] = [];
+  let destinoConfigs: SistemaDestinoConfig[] = [];
 
   root.innerHTML = `
     <h1>Api Services</h1>
@@ -107,6 +108,11 @@ export function renderApiServicesPage(deps: ApiServicesPageDeps): HTMLElement {
           </div>
 
           <div style="margin-top: 10px;">
+            <h3 style="margin: 0 0 8px; font-size: 14px;">Sistemas Destino</h3>
+            <div id="destinosList" style="border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 10px; max-height: 160px; overflow: auto;"></div>
+          </div>
+
+          <div style="margin-top: 10px;">
             <h3 style="margin: 0 0 8px; font-size: 14px;">Parâmetros GET</h3>
             <div class="get-params-list">
               <table class="table compact-table" style="margin-bottom: 8px;">
@@ -183,6 +189,7 @@ export function renderApiServicesPage(deps: ApiServicesPageDeps): HTMLElement {
   const baseUrlEl = root.querySelector<HTMLInputElement>('#baseUrl')!;
   const endpointPathEl = root.querySelector<HTMLInputElement>('#endpointPath')!;
   const alternativeBaseUrlEl = root.querySelector<HTMLInputElement>('#alternativeBaseUrl')!;
+  const destinosListEl = root.querySelector<HTMLDivElement>('#destinosList')!;
   const getParamsRowsEl = root.querySelector<HTMLTableSectionElement>('#getParamsRows')!;
   const btnAddGetParam = root.querySelector<HTMLButtonElement>('#btnAddGetParam')!;
   const descriptionEl = root.querySelector<HTMLTextAreaElement>('#description')!;
@@ -193,6 +200,7 @@ export function renderApiServicesPage(deps: ApiServicesPageDeps): HTMLElement {
   const updatedAtEl = root.querySelector<HTMLInputElement>('#updatedAt')!;
   const parametrosEl = root.querySelector<HTMLTextAreaElement>('#parametros')!;
   let getParamsDraft: Array<{ key: string; name: string; value_type: ApiServiceGetParam['value_type']; value: string }> = [];
+  let destinoIdsDraft: number[] = [];
 
   const newGetParamRow = (
     partial?: Partial<{ name: string; value_type: ApiServiceGetParam['value_type']; value: string }>
@@ -250,6 +258,46 @@ export function renderApiServicesPage(deps: ApiServicesPageDeps): HTMLElement {
     });
   }
 
+  function renderDestinosList() {
+    if (!destinoConfigs.length) {
+      destinosListEl.innerHTML = `<div class="muted">Nenhum sistema destino cadastrado.</div>`;
+      return;
+    }
+
+    const selected = new Set(destinoIdsDraft);
+    destinosListEl.innerHTML = destinoConfigs
+      .slice()
+      .sort((a, b) => a.nome.localeCompare(b.nome))
+      .map((d) => {
+        const checked = selected.has(d.id) ? 'checked' : '';
+        const meta = `${d.tabela_origem} • ${d.entidade_view} • ${d.metodo} ${d.endpoint_url}`;
+        const disabled = d.ativo ? '' : 'disabled';
+        const status = d.ativo ? '' : ' <span class="muted">(inativo)</span>';
+        return `
+          <label style="display:flex; gap:10px; align-items:flex-start; padding:6px 2px;">
+            <input type="checkbox" class="destinoChk" data-id="${d.id}" style="width:auto; margin-top:2px;" ${checked} ${disabled} />
+            <div>
+              <div style="font-weight:600;">${d.nome}${status}</div>
+              <div class="muted" style="font-size:12px;">${meta}</div>
+            </div>
+          </label>
+        `;
+      })
+      .join('');
+  }
+
+  destinosListEl.addEventListener('change', (e) => {
+    const target = e.target as HTMLElement | null;
+    if (!target || !(target instanceof HTMLInputElement)) return;
+    if (!target.classList.contains('destinoChk')) return;
+    const id = Number(target.dataset.id);
+    if (!Number.isInteger(id) || id <= 0) return;
+    const set = new Set(destinoIdsDraft);
+    if (target.checked) set.add(id);
+    else set.delete(id);
+    destinoIdsDraft = Array.from(set);
+  });
+
   function parseLegacyParametroGet(parametroGet?: string | null): ApiServiceGetParam[] {
     if (!parametroGet) return [];
     return parametroGet
@@ -298,6 +346,15 @@ export function renderApiServicesPage(deps: ApiServicesPageDeps): HTMLElement {
     } catch (err) {
       console.error('Erro ao carregar auth configs:', err);
     }
+  }
+
+  async function loadDestinoConfigs() {
+    try {
+      destinoConfigs = await deps.api<SistemaDestinoConfig[]>('/api-integration/sistema-destino-configs');
+    } catch {
+      destinoConfigs = [];
+    }
+    renderDestinosList();
   }
 
   async function loadAvailableServices() {
@@ -415,6 +472,8 @@ export function renderApiServicesPage(deps: ApiServicesPageDeps): HTMLElement {
     baseUrlEl.value = endpointParts.baseUrl;
     endpointPathEl.value = endpointParts.endpointPath;
     alternativeBaseUrlEl.value = item?.base_url_alternativa || '';
+    destinoIdsDraft = (item?.destino_ids ?? []).slice();
+    renderDestinosList();
     const getParams = item?.get_params?.length ? item.get_params : parseLegacyParametroGet(item?.parametro_get);
     getParamsDraft = getParams.map((p) => newGetParamRow({ name: p.name, value_type: p.value_type, value: p.value }));
     renderGetParamsRows();
@@ -470,6 +529,7 @@ export function renderApiServicesPage(deps: ApiServicesPageDeps): HTMLElement {
       service_name: serviceNameEl.value,
       endpoint_url: composeEndpointUrl(baseUrlEl.value, endpointPathEl.value),
       base_url_alternativa: alternativeBaseUrlEl.value.trim() || null,
+      destino_ids: destinoIdsDraft,
       parametro_get: null,
       get_params: getParams,
       description: descriptionEl.value,
@@ -504,6 +564,7 @@ export function renderApiServicesPage(deps: ApiServicesPageDeps): HTMLElement {
   });
 
   void loadAuthConfigs();
+  void loadDestinoConfigs();
   void loadAvailableServices();
   void loadData();
   return root;

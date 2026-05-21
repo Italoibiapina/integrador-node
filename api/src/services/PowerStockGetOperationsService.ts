@@ -98,7 +98,8 @@ export class PowerStockGetOperationsService {
   }
 
   private async persistVendasRawFromRegistros(
-    registros: Array<{ idVendaExterno: string; payload: unknown }>
+    registros: Array<{ idVendaExterno: string; payload: unknown }>,
+    sourceServiceId: string
   ): Promise<{ inserted: number; discarded: number }> {
     let inserted = 0;
     let discarded = 0;
@@ -108,9 +109,18 @@ export class PowerStockGetOperationsService {
       if (!idVendaExterno) continue;
 
       const hashPayload = this.hashPayload(registro.payload);
-      const wasInserted = await this.repository.insertOperacaoRawIfChanged(idVendaExterno, registro.payload, hashPayload);
-      if (wasInserted) inserted += 1;
-      else discarded += 1;
+      const rawId = await this.repository.insertOperacaoRawIfChanged(
+        idVendaExterno,
+        registro.payload,
+        hashPayload,
+        sourceServiceId
+      );
+      if (rawId) {
+        inserted += 1;
+        await this.repository.processOperacaoRaw(rawId);
+      } else {
+        discarded += 1;
+      }
     }
 
     return { inserted, discarded };
@@ -238,6 +248,9 @@ export class PowerStockGetOperationsService {
   private buildDateRangeParams(context?: ExecuteServiceContext): { dataEmissaoInicio: string; dataEmissaoFim: string } {
     const startDate = this.resolveRangeDateInput(context?.dataEmissaoInicio, 'start');
     const endDate = this.resolveRangeDateInput(context?.dataEmissaoFim, 'end');
+    if (startDate.getTime() > endDate.getTime()) {
+      throw new Error('dataEmissaoInicio não pode ser maior que dataEmissaoFim.');
+    }
     return {
       dataEmissaoInicio: startDate.toISOString(),
       dataEmissaoFim: endDate.toISOString(),
@@ -508,7 +521,7 @@ export class PowerStockGetOperationsService {
         }
       }
 
-      const rawPersistResult = await this.persistVendasRawFromRegistros(rawEntries);
+      const rawPersistResult = await this.persistVendasRawFromRegistros(rawEntries, service.id);
       console.log('============================> operacoes_raw.persist:', {
         total_registros_listagem: operations.length,
         total_detalhes_processados: rawEntries.length,
@@ -522,6 +535,8 @@ export class PowerStockGetOperationsService {
       
       if (!externalBatchId) {
         await this.repository.finishBatch(effectiveBatchId, finalStatus, undefined, { 
+          dataEmissaoInicio: dateRangeParams.dataEmissaoInicio,
+          dataEmissaoFim: dateRangeParams.dataEmissaoFim,
           operations_count: operations.length,
           details_fetched: results.length,
           operacoes_raw_inserted: rawPersistResult.inserted,
@@ -544,6 +559,8 @@ export class PowerStockGetOperationsService {
       return {
         success: !hasFailures,
         data: {
+          dataEmissaoInicio: dateRangeParams.dataEmissaoInicio,
+          dataEmissaoFim: dateRangeParams.dataEmissaoFim,
           operations_count: operations.length,
           details_fetched: results.length,
           operacoes_raw_inserted: rawPersistResult.inserted,
@@ -556,7 +573,10 @@ export class PowerStockGetOperationsService {
       await this.repository.updateServiceStatus(serviceId, 'error');
 
       if (!externalBatchId) {
-        await this.repository.finishBatch(effectiveBatchId, 'failed', errorMessage);
+        await this.repository.finishBatch(effectiveBatchId, 'failed', errorMessage, {
+          dataEmissaoInicio: dateRangeParams.dataEmissaoInicio,
+          dataEmissaoFim: dateRangeParams.dataEmissaoFim,
+        });
       }
       await this.repository.finishServiceExecution(rootExecutionId, 'failed', new Date(), null, errorMessage);
 
@@ -600,71 +620,87 @@ export class PowerStockGetOperationsService {
   }
 
   private async callApi(auth: ApiAuthConfig, service: ApiService, endpoint: ApiEndpointConfig, session: AuthSession): Promise<any> {
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      ...auth.extra_headers,
-    };
-    for (const [key, value] of Object.entries(headers)) {
-      if (typeof value === 'string') headers[key] = normalizeHeaderValue(value);
-    }
-    if (session.token) {
-      headers.Authorization = `Bearer ${session.token}`;
-    }
-    if (session.cookie) {
-      headers.Cookie = session.cookie;
-    }
-    if (session.lojaId) {
-      headers.lojaid = session.lojaId;
-    }
-
     const requestUrl = this.resolveRequestUrl(auth, service, endpoint.path);
-    const debugHeaders: Record<string, string> = { ...headers };
-    if (debugHeaders.Authorization) debugHeaders.Authorization = 'Bearer ***';
-    if (debugHeaders.Cookie) debugHeaders.Cookie = '***';
-    console.log('============================> callApi.request:', {
-      method: endpoint.method,
-      url: requestUrl,
-      headers: debugHeaders,
-      hasToken: Boolean(session.token),
-      hasCookie: Boolean(session.cookie),
-      lojaId: session.lojaId,
-    });
-
-    const response = await fetch(requestUrl, {
-      method: endpoint.method,
-      headers
-    });
-
-    const responseBodyText = await response.text();
-    console.log('============================> callApi.response:', {
-      status: response.status,
-      statusText: response.statusText,
-      url: requestUrl,
-    });
-
-    if (!response.ok) {
-      console.log('============================> callApi.response.errorBody:', responseBodyText || '<vazio>');
-      throw new Error(`Erro na chamada da API: ${response.status} ${response.statusText}. Body: ${responseBodyText || '<vazio>'}`);
-    }
-
-    if (!responseBodyText) {
-      console.log('============================> callApi.response.successBody: <vazio>');
-      return {};
-    }
-
-    try {
-      const parsedBody = JSON.parse(responseBodyText);
-      console.log('============================> callApi.response.successBody.pretty:\n', JSON.stringify(parsedBody, null, 2));
-      if (Array.isArray(parsedBody)) {
-        console.log('============================> callApi.response.successBody.items:');
-        parsedBody.forEach((item, index) => {
-          console.log(`  [${index}]`, JSON.stringify(item));
-        });
+    const buildHeaders = (currentSession: AuthSession): Record<string, string> => {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        ...auth.extra_headers,
+      };
+      for (const [key, value] of Object.entries(headers)) {
+        if (typeof value === 'string') headers[key] = normalizeHeaderValue(value);
       }
-      return parsedBody;
-    } catch {
-      console.log('============================> callApi.response.successBody:', responseBodyText);
-      return responseBodyText;
+      if (currentSession.token) headers.Authorization = `Bearer ${currentSession.token}`;
+      if (currentSession.cookie) headers.Cookie = currentSession.cookie;
+      if (currentSession.lojaId) headers.lojaid = currentSession.lojaId;
+      return headers;
+    };
+
+    const doRequest = async (currentSession: AuthSession, attempt: number) => {
+      const headers = buildHeaders(currentSession);
+      const debugHeaders: Record<string, string> = { ...headers };
+      if (debugHeaders.Authorization) debugHeaders.Authorization = 'Bearer ***';
+      if (debugHeaders.Cookie) debugHeaders.Cookie = '***';
+      console.log('============================> callApi.request:', {
+        attempt,
+        method: endpoint.method,
+        url: requestUrl,
+        headers: debugHeaders,
+        hasToken: Boolean(currentSession.token),
+        hasCookie: Boolean(currentSession.cookie),
+        lojaId: currentSession.lojaId,
+      });
+
+      const response = await fetch(requestUrl, {
+        method: endpoint.method,
+        headers
+      });
+      const responseBodyText = await response.text();
+      console.log('============================> callApi.response:', {
+        attempt,
+        status: response.status,
+        statusText: response.statusText,
+        url: requestUrl,
+      });
+      return { response, responseBodyText };
+    };
+
+    const parseOkBody = (responseBodyText: string): any => {
+      if (!responseBodyText) {
+        console.log('============================> callApi.response.successBody: <vazio>');
+        return {};
+      }
+      try {
+        const parsedBody = JSON.parse(responseBodyText);
+        console.log('============================> callApi.response.successBody.pretty:\n', JSON.stringify(parsedBody, null, 2));
+        if (Array.isArray(parsedBody)) {
+          console.log('============================> callApi.response.successBody.items:');
+          parsedBody.forEach((item, index) => {
+            console.log(`  [${index}]`, JSON.stringify(item));
+          });
+        }
+        return parsedBody;
+      } catch {
+        console.log('============================> callApi.response.successBody:', responseBodyText);
+        return responseBodyText;
+      }
+    };
+
+    const first = await doRequest(session, 1);
+    if (first.response.ok) return parseOkBody(first.responseBodyText);
+
+    console.log('============================> callApi.response.errorBody:', first.responseBodyText || '<vazio>');
+    if (first.response.status === 401) {
+      console.log('============================> callApi.unauthorized.retry_auth', {
+        url: requestUrl,
+        method: endpoint.method,
+      });
+      const refreshed = await this.authService.ensureAuthenticated(auth, { force: true });
+      const second = await doRequest(refreshed, 2);
+      if (second.response.ok) return parseOkBody(second.responseBodyText);
+      console.log('============================> callApi.response.errorBody:', second.responseBodyText || '<vazio>');
+      throw new Error(`Erro na chamada da API: ${second.response.status} ${second.response.statusText}. Body: ${second.responseBodyText || '<vazio>'}`);
     }
+
+    throw new Error(`Erro na chamada da API: ${first.response.status} ${first.response.statusText}. Body: ${first.responseBodyText || '<vazio>'}`);
   }
 }

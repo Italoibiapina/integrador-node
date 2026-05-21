@@ -4,6 +4,7 @@ import { renderDashboardPage } from './pages/dashboard';
 import { renderExecutionsPage } from './pages/executions';
 import { renderLoginPage } from './pages/login';
 import { renderManualRunPage } from './pages/manual-run';
+import { renderManualPowerStockPage } from './pages/manual-powerstock';
 import { renderNotifiersPage } from './pages/notifiers';
 import { renderConnectionsPage } from './pages/connections';
 import { renderSchedulesPage } from './pages/schedules';
@@ -13,6 +14,7 @@ import { renderApiAuthConfigsPage } from './pages/api-auth-configs';
 import { renderApiServicesPage } from './pages/api-services';
 import { renderServiceExecutionLogsPage } from './pages/service-execution-logs';
 import { renderSistemaDestinoConfigsPage } from './pages/sistema-destino-configs';
+import { renderManualDispatcherPage } from './pages/manual-dispatcher';
 
 const apiBase = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:3005';
 
@@ -42,6 +44,13 @@ app.innerHTML = `
         </div>
 
         <div class="nav-group">
+          <div class="nav-group-title">Disparo Manual</div>
+          <a href="#/manual-run" data-path="/manual-run">Passo 1 / Passo 2</a>
+          <a href="#/manual-powerstock" data-path="/manual-powerstock">Buscar dados no PowerStock</a>
+          <a href="#/manual-dispatcher" data-path="/manual-dispatcher">Processar Pendências</a>
+        </div>
+
+        <div class="nav-group">
           <div class="nav-group-title">Master Data</div>
           <a href="#/api-auth-configs" data-path="/api-auth-configs">Api Auth Config</a>
           <a href="#/api-services" data-path="/api-services">Api Services</a>
@@ -53,7 +62,6 @@ app.innerHTML = `
           <a href="#/dashboard" data-path="/dashboard">Dashboard</a>
           <a href="#/integrations" data-path="/integrations">Integrações</a>
           <a href="#/schedules" data-path="/schedules">Agendamentos</a>
-          <a href="#/manual-run" data-path="/manual-run">Disparo Manual</a>
           <a href="#/executions" data-path="/executions">Execuções</a>
         </div>
 
@@ -176,6 +184,11 @@ async function render() {
     return;
   }
 
+  if (path === '/manual-powerstock') {
+    viewEl.appendChild(renderManualPowerStockPage({ api }));
+    return;
+  }
+
   if (path === '/executions') {
     viewEl.appendChild(renderExecutionsPage({ api }, { id: query.get('id') }));
     return;
@@ -213,6 +226,11 @@ async function render() {
 
   if (path === '/service-execution-logs') {
     viewEl.appendChild(renderServiceExecutionLogsPage({ api }));
+    return;
+  }
+
+  if (path === '/manual-dispatcher') {
+    viewEl.appendChild(renderManualDispatcherPage({ api }));
     return;
   }
 

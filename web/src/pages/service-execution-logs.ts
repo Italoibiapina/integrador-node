@@ -47,6 +47,7 @@ export function renderServiceExecutionLogsPage(deps: ServiceExecutionLogsPageDep
               <th>Data/Hora</th>
               <th>Serviço</th>
               <th>Status</th>
+              <th>Destinos</th>
               <th>Ações</th>
             </tr>
           </thead>
@@ -185,6 +186,48 @@ export function renderServiceExecutionLogsPage(deps: ServiceExecutionLogsPageDep
     );
   }
 
+  type DispatcherDestinoStats = {
+    sistema_nome: string;
+    selected: number;
+    success: number;
+    error: number;
+  };
+
+  function extractDestinosFromBatch(batch: ApiBatch): DispatcherDestinoStats[] {
+    const rr = batch?.raw_response;
+    if (!rr || typeof rr !== 'object') return [];
+    const obj = rr as Record<string, unknown>;
+    const destinos = obj.destinos;
+    if (!Array.isArray(destinos)) return [];
+    return destinos
+      .map((d) => {
+        if (!d || typeof d !== 'object') return null;
+        const rec = d as Record<string, unknown>;
+        const sistema_nome = String(rec.sistema_nome ?? '').trim();
+        const selected = Number(rec.selected ?? 0);
+        const success = Number(rec.success ?? 0);
+        const error = Number(rec.error ?? 0);
+        if (!sistema_nome) return null;
+        return {
+          sistema_nome,
+          selected: Number.isFinite(selected) ? selected : 0,
+          success: Number.isFinite(success) ? success : 0,
+          error: Number.isFinite(error) ? error : 0,
+        };
+      })
+      .filter((x): x is DispatcherDestinoStats => Boolean(x))
+      .sort((a, b) => a.sistema_nome.localeCompare(b.sistema_nome));
+  }
+
+  function formatDestinosInline(destinos: DispatcherDestinoStats[]): { text: string; title: string } {
+    if (!destinos.length) return { text: '-', title: '' };
+    const title = destinos.map((d) => `${d.sistema_nome} (ok:${d.success} err:${d.error} sel:${d.selected})`).join(', ');
+    const maxInline = 2;
+    const inlineNames = destinos.slice(0, maxInline).map((d) => d.sistema_nome).join(', ');
+    const text = destinos.length > maxInline ? `${inlineNames} +${destinos.length - maxInline}` : inlineNames;
+    return { text, title };
+  }
+
   function resolveExecutionServiceAndStep(execution: any): { service: string; subStep: string } {
     const serviceName =
       execution?.snapshot_config?.service?.service_name ||
@@ -213,6 +256,7 @@ export function renderServiceExecutionLogsPage(deps: ServiceExecutionLogsPageDep
             ${b.status}
           </span>
         </td>
+        <td title="${formatDestinosInline(extractDestinosFromBatch(b)).title.replaceAll('"', '&quot;')}">${formatDestinosInline(extractDestinosFromBatch(b)).text}</td>
         <td>
           <button class="btnViewDetail" data-id="${b.id}">Ver Detalhes</button>
         </td>
@@ -231,6 +275,7 @@ export function renderServiceExecutionLogsPage(deps: ServiceExecutionLogsPageDep
     try {
       const batch = await deps.api<ApiBatch>(`/api-integration/batches/${batchId}`);
       const executions = await deps.api<any[]>(`/api-integration/executions?batchId=${batchId}`);
+      const destinosInline = formatDestinosInline(extractDestinosFromBatch(batch));
       
       detailWorkspace.style.display = 'block';
       executionDetailSection.style.display = 'none';
@@ -240,6 +285,7 @@ export function renderServiceExecutionLogsPage(deps: ServiceExecutionLogsPageDep
           <p><strong>ID:</strong> ${batch.id}</p>
           <p><strong>Serviço:</strong> ${resolveBatchServiceName(batch)}</p>
           <p><strong>Duração:</strong> ${batch.finished_at ? Math.round((new Date(batch.finished_at).getTime() - new Date(batch.started_at).getTime()) / 1000) + 's' : 'Em andamento'}</p>
+          <p title="${destinosInline.title.replaceAll('"', '&quot;')}"><strong>Destinos:</strong> ${destinosInline.text}</p>
           ${batch.error_message ? `<p style="color: #ff4d4f;"><strong>Erro:</strong> ${batch.error_message}</p>` : ''}
           <button id="btnViewBatchRaw" class="pill">Ver JSON Bruto do Lote</button>
         </div>

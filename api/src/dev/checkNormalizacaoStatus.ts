@@ -22,7 +22,7 @@ async function main() {
        FROM pg_proc p
        JOIN pg_namespace n ON n.oid = p.pronamespace
        WHERE n.nspname = 'public'
-         AND p.proname IN ('fn_normalizar_operacoes')`
+         AND p.proname IN ('fn_processar_operacao_venda_powerstock')`
     );
     const operacoes = await db.query(
       `SELECT id, id_venda_externo, numero_operacao, atualizado_em

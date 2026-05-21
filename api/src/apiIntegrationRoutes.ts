@@ -5,13 +5,35 @@ import { createDb } from './db.js';
 import { env } from './env.js';
 import { authRequired } from './api.js';
 import { PowerStockGetOperationsService } from './services/PowerStockGetOperationsService.js';
+import { PrismaClient } from '@prisma/client';
+import { DispatcherService } from './services/DispatcherService.js';
 
 export async function apiIntegrationRoutes(fastify: FastifyInstance, options: FastifyPluginOptions) {
   const db = createDb(env.databaseUrl);
   const repository = new ApiServiceRepository(db);
   const powerStockGetOperationsService = new PowerStockGetOperationsService(repository);
+  const dispatcherDefaults = {
+    maxConcurrency: 2,
+    maxRetries: 3,
+    limit: 200,
+  };
 
   fastify.addHook('preHandler', authRequired);
+
+  async function countDispatcherPending(): Promise<number> {
+    const result = await db.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count
+       FROM integracao_pendente ip
+       JOIN sistema_destino_config sdc ON sdc.nome = ip.sistema_nome
+       WHERE ip.status = 'pendente'
+         AND ip.tentativas < $1
+         AND sdc.ativo = true`,
+      [dispatcherDefaults.maxRetries]
+    );
+    const raw = result.rows[0]?.count ?? '0';
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
 
   // Auth Configs
   fastify.get('/auth-configs', async () => {
@@ -157,6 +179,32 @@ export async function apiIntegrationRoutes(fastify: FastifyInstance, options: Fa
       }
       reply.code(500).send({ ok: false, error: error?.message ?? 'Falha ao executar serviço' });
     }
+  });
+
+  fastify.get('/dispatcher/pending', async () => {
+    const pendingEligible = await countDispatcherPending();
+    return {
+      pendingEligible,
+      batchLimit: dispatcherDefaults.limit,
+      maxRetries: dispatcherDefaults.maxRetries,
+      maxConcurrency: dispatcherDefaults.maxConcurrency,
+    };
+  });
+
+  fastify.post('/dispatcher/execute', async (request, reply) => {
+    const before = await countDispatcherPending();
+    const prisma = new PrismaClient();
+    const dispatcher = new DispatcherService(prisma, {
+      maxConcurrency: dispatcherDefaults.maxConcurrency,
+      maxRetries: dispatcherDefaults.maxRetries,
+    });
+    try {
+      await dispatcher.processPendingBatch();
+    } finally {
+      await prisma.$disconnect();
+    }
+    const after = await countDispatcherPending();
+    reply.code(201).send({ ok: true, pendingBefore: before, pendingAfter: after });
   });
 
   // Batches
