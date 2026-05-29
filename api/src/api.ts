@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import cookie from '@fastify/cookie';
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 
-import { signJwt, verifyJwt, verifyPassword, type JwtUser } from './auth.js';
+import { hashPassword, signJwt, verifyJwt, verifyPassword, type JwtUser } from './auth.js';
 import { startBoss } from './boss.js';
 import { advisoryLockKey, createDb } from './db.js';
 import { env } from './env.js';
@@ -17,7 +17,8 @@ declare module 'fastify' {
   }
 }
 
-type UserRow = { id: string; email: string; password_hash: string; role: 'admin' | 'operator' };
+type UserRow = { id: string; email: string; password_hash: string; role: string };
+type ProfileRow = { role: string; name: string; created_at: string };
 type ConnectionRow = {
   id: string;
   name: string;
@@ -150,6 +151,68 @@ export async function authRequired(request: FastifyRequest, reply: FastifyReply)
     request.user = verifyJwt(token, env.jwtSecret);
   } catch {
     reply.code(401).send({ error: 'Unauthorized' });
+    return;
+  }
+}
+
+type ScreenCatalogItem = { path: string; label: string; group: string };
+
+const screenCatalog: ScreenCatalogItem[] = [
+  { group: 'Execução Serviços', path: '/service-execution-logs', label: 'Logs de Execução' },
+  { group: 'Disparo Manual', path: '/manual-run', label: 'Passo 1 / Passo 2' },
+  { group: 'Disparo Manual', path: '/manual-powerstock', label: 'Buscar dados no PowerStock' },
+  {
+    group: 'Disparo Manual',
+    path: '/manual-integrador-powerstock-dispatcher',
+    label: 'PowerStock + Pendências',
+  },
+  { group: 'Disparo Manual', path: '/manual-dispatcher', label: 'Processar Pendências' },
+  { group: 'Master Data', path: '/api-auth-configs', label: 'Api Auth Config' },
+  { group: 'Master Data', path: '/api-services', label: 'Api Services' },
+  { group: 'Master Data', path: '/sistema-destino-configs', label: 'Sistema Destino Config' },
+  { group: 'Master Data', path: '/schedules', label: 'Agendamentos' },
+  { group: 'Geral', path: '/dashboard', label: 'Dashboard' },
+  { group: 'Geral', path: '/integrations', label: 'Integrações' },
+  { group: 'Geral', path: '/executions', label: 'Execuções' },
+  { group: 'Configurações', path: '/connections', label: 'Conexões' },
+  { group: 'Configurações', path: '/custom-connections', label: 'Conexões Customizadas' },
+  { group: 'Configurações', path: '/notifiers', label: 'Notificadores' },
+  { group: 'Admin', path: '/users', label: 'Usuários' },
+  { group: 'Admin', path: '/profiles', label: 'Perfis' },
+];
+
+const screenPaths = new Set(screenCatalog.map((s) => s.path));
+
+async function getRoleName(role: string): Promise<string> {
+  const result = await db.query<Pick<ProfileRow, 'role' | 'name'>>('select role, name from profiles where role = $1', [
+    role,
+  ]);
+  return result.rows[0]?.name ?? role;
+}
+
+async function getAllowedScreens(role: string): Promise<string[]> {
+  const result = await db.query<{ screen: string }>(
+    'select screen from profile_screen_permissions where role = $1 order by screen asc',
+    [role]
+  );
+  const screens = result.rows.map((r) => r.screen).filter((p) => screenPaths.has(p));
+  if (screens.length > 0) return screens;
+  if (role === 'admin') return screenCatalog.map((s) => s.path);
+  return [];
+}
+
+function normalizeRole(input: string): string {
+  return input.trim().toLowerCase();
+}
+
+function isValidRole(role: string): boolean {
+  return /^[a-z0-9][a-z0-9_-]{0,63}$/.test(role);
+}
+
+async function adminGuard(request: FastifyRequest, reply: FastifyReply) {
+  if (reply.sent) return;
+  if (request.user?.role !== 'admin') {
+    reply.code(403).send({ error: 'Forbidden' });
   }
 }
 
@@ -404,9 +467,10 @@ app.post('/auth/login', async (request, reply) => {
     return;
   }
 
+  const [roleName, screens] = await Promise.all([getRoleName(user.role), getAllowedScreens(user.role)]);
   const token = signJwt({ userId: user.id, email: user.email, role: user.role }, env.jwtSecret);
   setAuthCookie(reply, token);
-  reply.send({ id: user.id, email: user.email, role: user.role });
+  reply.send({ id: user.id, email: user.email, role: user.role, roleName, screens });
 });
 
 app.post('/auth/logout', async (_request, reply) => {
@@ -415,7 +479,211 @@ app.post('/auth/logout', async (_request, reply) => {
 });
 
 app.get('/auth/me', { preHandler: authRequired }, async (request) => {
-  return request.user;
+  const user = request.user!;
+  const [roleName, screens] = await Promise.all([getRoleName(user.role), getAllowedScreens(user.role)]);
+  return { ...user, roleName, screens };
+});
+
+app.get('/admin/screens', { preHandler: [authRequired, adminGuard] }, async () => {
+  return screenCatalog;
+});
+
+app.get('/profiles', { preHandler: [authRequired, adminGuard] }, async () => {
+  const result = await db.query<ProfileRow>('select role, name, created_at from profiles order by role asc');
+  return result.rows;
+});
+
+app.post('/profiles', { preHandler: [authRequired, adminGuard] }, async (request, reply) => {
+  const body = request.body as { role?: string; name?: string } | undefined;
+  const role = typeof body?.role === 'string' ? normalizeRole(body.role) : '';
+  const name = body?.name?.trim() ?? '';
+
+  if (!role || !isValidRole(role) || !name) {
+    reply.code(400).send({ error: 'role (a-z0-9_-), and name are required' });
+    return;
+  }
+
+  const result = await db.query<ProfileRow>(
+    `insert into profiles (role, name)
+     values ($1, $2)
+     returning role, name, created_at`,
+    [role, name]
+  );
+  reply.code(201).send(result.rows[0]);
+});
+
+app.put('/profiles/:role', { preHandler: [authRequired, adminGuard] }, async (request, reply) => {
+  const params = request.params as { role: string };
+  const role = normalizeRole(params.role);
+  const body = request.body as { name?: string } | undefined;
+  const name = body?.name?.trim() ?? '';
+
+  if (!name) {
+    reply.code(400).send({ error: 'name is required' });
+    return;
+  }
+
+  const result = await db.query<ProfileRow>(
+    `update profiles
+     set name = $2
+     where role = $1
+     returning role, name, created_at`,
+    [role, name]
+  );
+  const updated = result.rows[0];
+  if (!updated) {
+    reply.code(404).send({ error: 'Not found' });
+    return;
+  }
+  reply.send(updated);
+});
+
+app.delete('/profiles/:role', { preHandler: [authRequired, adminGuard] }, async (request, reply) => {
+  const params = request.params as { role: string };
+  const role = normalizeRole(params.role);
+
+  if (role === 'admin') {
+    reply.code(400).send({ error: 'Cannot delete admin profile' });
+    return;
+  }
+
+  const usage = await db.query<{ count: string }>('select count(*)::text as count from users where role = $1', [role]);
+  const count = Number(usage.rows[0]?.count ?? '0');
+  if (count > 0) {
+    reply.code(409).send({ error: 'Profile is in use by users' });
+    return;
+  }
+
+  const result = await db.query<{ role: string }>('delete from profiles where role = $1 returning role', [role]);
+  if (!result.rows[0]) {
+    reply.code(404).send({ error: 'Not found' });
+    return;
+  }
+  reply.send({ ok: true });
+});
+
+app.get('/profiles/:role/screens', { preHandler: [authRequired, adminGuard] }, async (request, reply) => {
+  const params = request.params as { role: string };
+  const role = normalizeRole(params.role);
+
+  const profile = await db.query<Pick<ProfileRow, 'role'>>('select role from profiles where role = $1', [role]);
+  if (!profile.rows[0]) {
+    reply.code(404).send({ error: 'Not found' });
+    return;
+  }
+
+  const result = await db.query<{ screen: string }>(
+    'select screen from profile_screen_permissions where role = $1 order by screen asc',
+    [role]
+  );
+  return result.rows.map((r) => r.screen);
+});
+
+app.put('/profiles/:role/screens', { preHandler: [authRequired, adminGuard] }, async (request, reply) => {
+  const params = request.params as { role: string };
+  const role = normalizeRole(params.role);
+  const body = request.body as { screens?: unknown } | undefined;
+  const screensRaw = Array.isArray(body?.screens) ? (body?.screens as unknown[]) : null;
+  const screens = (screensRaw ?? [])
+    .filter((s): s is string => typeof s === 'string')
+    .map((s) => s.trim())
+    .filter((s) => screenPaths.has(s));
+
+  const profile = await db.query<Pick<ProfileRow, 'role'>>('select role from profiles where role = $1', [role]);
+  if (!profile.rows[0]) {
+    reply.code(404).send({ error: 'Not found' });
+    return;
+  }
+
+  await db.tx(async (client) => {
+    await client.query('delete from profile_screen_permissions where role = $1', [role]);
+    for (const screen of screens) {
+      await client.query('insert into profile_screen_permissions (role, screen) values ($1, $2)', [role, screen]);
+    }
+  });
+
+  reply.send({ ok: true, role, screens });
+});
+
+type UserListRow = { id: string; email: string; role: string; created_at: string; role_name: string | null };
+
+app.get('/users', { preHandler: [authRequired, adminGuard] }, async () => {
+  const result = await db.query<UserListRow>(
+    `select u.id, u.email, u.role, u.created_at, p.name as role_name
+     from users u
+     left join profiles p on p.role = u.role
+     order by u.created_at desc`
+  );
+  return result.rows;
+});
+
+app.post('/users', { preHandler: [authRequired, adminGuard] }, async (request, reply) => {
+  const body = request.body as { email?: string; password?: string; role?: string } | undefined;
+  const email = body?.email?.trim();
+  const password = body?.password ?? '';
+  const role = typeof body?.role === 'string' ? normalizeRole(body.role) : '';
+
+  if (!email || !password || password.length < 6 || !role) {
+    reply.code(400).send({ error: 'email, role and password (min 6) are required' });
+    return;
+  }
+
+  const passwordHash = await hashPassword(password);
+  const result = await db.query<UserListRow>(
+    `insert into users (email, password_hash, role)
+     values ($1, $2, $3)
+     returning id, email, role, created_at, (select name from profiles where role = $3) as role_name`,
+    [email, passwordHash, role]
+  );
+  reply.code(201).send(result.rows[0]);
+});
+
+app.put('/users/:id', { preHandler: [authRequired, adminGuard] }, async (request, reply) => {
+  const params = request.params as { id: string };
+  const body = request.body as { email?: string; password?: string; role?: string } | undefined;
+  const email = body?.email?.trim();
+  const password = body?.password;
+  const role = typeof body?.role === 'string' ? normalizeRole(body.role) : '';
+
+  if (!email || !role) {
+    reply.code(400).send({ error: 'email and role are required' });
+    return;
+  }
+
+  const passwordHash = typeof password === 'string' && password ? await hashPassword(password) : null;
+
+  const result = await db.query<UserListRow>(
+    `update users
+     set email = $2,
+         role = $3,
+         password_hash = coalesce($4, password_hash)
+     where id = $1
+     returning id, email, role, created_at, (select name from profiles where role = $3) as role_name`,
+    [params.id, email, role, passwordHash]
+  );
+  const updated = result.rows[0];
+  if (!updated) {
+    reply.code(404).send({ error: 'Not found' });
+    return;
+  }
+  reply.send(updated);
+});
+
+app.delete('/users/:id', { preHandler: [authRequired, adminGuard] }, async (request, reply) => {
+  const params = request.params as { id: string };
+  const currentUserId = request.user?.userId;
+
+  if (currentUserId && params.id === currentUserId) {
+    reply.code(400).send({ error: 'Cannot delete yourself' });
+    return;
+  }
+
+  const result = await db.query<{ id: string }>('delete from users where id = $1 returning id', [params.id]);
+  if (!result.rows[0]) {
+    reply.code(404).send({ error: 'Not found' });
+    return;
+  }
+  reply.send({ ok: true });
 });
 
 app.get('/connections', { preHandler: authRequired }, async () => {

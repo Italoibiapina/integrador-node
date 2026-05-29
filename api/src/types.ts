@@ -2,6 +2,7 @@ export const queueNames = {
   step1CaptureOrders: 'step1.captureOrders',
   step2SendOrders: 'step2.sendOrders',
   notifierDispatch: 'notifier.dispatch',
+  apiIntegrationExecuteService: 'apiIntegration.executeService',
 } as const;
 
 export type QueueName = (typeof queueNames)[keyof typeof queueNames];

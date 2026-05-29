@@ -5,6 +5,7 @@ import { renderExecutionsPage } from './pages/executions';
 import { renderLoginPage } from './pages/login';
 import { renderManualRunPage } from './pages/manual-run';
 import { renderManualPowerStockPage } from './pages/manual-powerstock';
+import { renderManualIntegradorPowerStockDispatcherPage } from './pages/manual-integrador-powerstock-dispatcher';
 import { renderNotifiersPage } from './pages/notifiers';
 import { renderConnectionsPage } from './pages/connections';
 import { renderSchedulesPage } from './pages/schedules';
@@ -15,10 +16,12 @@ import { renderApiServicesPage } from './pages/api-services';
 import { renderServiceExecutionLogsPage } from './pages/service-execution-logs';
 import { renderSistemaDestinoConfigsPage } from './pages/sistema-destino-configs';
 import { renderManualDispatcherPage } from './pages/manual-dispatcher';
+import { renderUsersPage } from './pages/users';
+import { renderProfilesPage } from './pages/profiles';
 
 const apiBase = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:3005';
 
-type JwtUser = { userId: string; email: string; role: string };
+type JwtUser = { userId: string; email: string; role: string; roleName?: string; screens?: string[] };
 
 function parseHash(): { path: string; query: URLSearchParams } {
   const raw = location.hash.startsWith('#') ? location.hash.slice(1) : location.hash;
@@ -47,6 +50,7 @@ app.innerHTML = `
           <div class="nav-group-title">Disparo Manual</div>
           <a href="#/manual-run" data-path="/manual-run">Passo 1 / Passo 2</a>
           <a href="#/manual-powerstock" data-path="/manual-powerstock">Buscar dados no PowerStock</a>
+          <a href="#/manual-integrador-powerstock-dispatcher" data-path="/manual-integrador-powerstock-dispatcher">PowerStock + Pendências</a>
           <a href="#/manual-dispatcher" data-path="/manual-dispatcher">Processar Pendências</a>
         </div>
 
@@ -55,13 +59,13 @@ app.innerHTML = `
           <a href="#/api-auth-configs" data-path="/api-auth-configs">Api Auth Config</a>
           <a href="#/api-services" data-path="/api-services">Api Services</a>
           <a href="#/sistema-destino-configs" data-path="/sistema-destino-configs">Sistema Destino Config</a>
+          <a href="#/schedules" data-path="/schedules">Agendamentos</a>
         </div>
 
         <div class="nav-group">
           <div class="nav-group-title">Geral</div>
           <a href="#/dashboard" data-path="/dashboard">Dashboard</a>
           <a href="#/integrations" data-path="/integrations">Integrações</a>
-          <a href="#/schedules" data-path="/schedules">Agendamentos</a>
           <a href="#/executions" data-path="/executions">Execuções</a>
         </div>
 
@@ -70,6 +74,12 @@ app.innerHTML = `
           <a href="#/connections" data-path="/connections">Conexões</a>
           <a href="#/custom-connections" data-path="/custom-connections">Conexões Customizadas</a>
           <a href="#/notifiers" data-path="/notifiers">Notificadores</a>
+        </div>
+
+        <div class="nav-group">
+          <div class="nav-group-title">Admin</div>
+          <a href="#/users" data-path="/users">Usuários</a>
+          <a href="#/profiles" data-path="/profiles">Perfis</a>
         </div>
       </nav>
       <div class="footer">
@@ -132,6 +142,28 @@ function setActiveNav(path: string) {
   }
 }
 
+function updateNavVisibility(user: JwtUser | null) {
+  const allowed = Array.isArray(user?.screens) && user.screens.length > 0 ? new Set(user.screens) : null;
+
+  for (const a of Array.from(navEl.querySelectorAll<HTMLAnchorElement>('a[data-path]'))) {
+    const p = a.getAttribute('data-path') ?? '';
+    const visible = !allowed || allowed.has(p);
+    a.style.display = visible ? '' : 'none';
+  }
+
+  for (const group of Array.from(navEl.querySelectorAll<HTMLElement>('.nav-group'))) {
+    const links = Array.from(group.querySelectorAll<HTMLAnchorElement>('a[data-path]'));
+    const anyVisible = links.some((l) => l.style.display !== 'none');
+    group.style.display = anyVisible ? '' : 'none';
+  }
+}
+
+function getDefaultAllowedPath(user: JwtUser): string {
+  const screens = Array.isArray(user.screens) ? user.screens : [];
+  if (screens.includes('/dashboard')) return '/dashboard';
+  return screens[0] ?? '/dashboard';
+}
+
 document.querySelector<HTMLButtonElement>('#btnLogout')?.addEventListener('click', async () => {
   try {
     await api('/auth/logout', { method: 'POST' });
@@ -146,8 +178,14 @@ async function render() {
   setActiveNav(path);
 
   const user = await me();
+  updateNavVisibility(user);
   if (!user && path !== '/login') {
     navigate('/login');
+    return;
+  }
+
+  if (user && Array.isArray(user.screens) && user.screens.length > 0 && !user.screens.includes(path) && path !== '/login') {
+    navigate(getDefaultAllowedPath(user));
     return;
   }
 
@@ -186,6 +224,11 @@ async function render() {
 
   if (path === '/manual-powerstock') {
     viewEl.appendChild(renderManualPowerStockPage({ api }));
+    return;
+  }
+
+  if (path === '/manual-integrador-powerstock-dispatcher') {
+    viewEl.appendChild(renderManualIntegradorPowerStockDispatcherPage({ api }));
     return;
   }
 
@@ -231,6 +274,16 @@ async function render() {
 
   if (path === '/manual-dispatcher') {
     viewEl.appendChild(renderManualDispatcherPage({ api }));
+    return;
+  }
+
+  if (path === '/users') {
+    viewEl.appendChild(renderUsersPage({ api }));
+    return;
+  }
+
+  if (path === '/profiles') {
+    viewEl.appendChild(renderProfilesPage({ api }));
     return;
   }
 

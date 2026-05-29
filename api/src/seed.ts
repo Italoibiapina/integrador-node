@@ -2,7 +2,7 @@ import { createDb } from './db.js';
 import { hashPassword } from './auth.js';
 import { env } from './env.js';
 
-type UserRow = { id: string; email: string; role: 'admin' | 'operator' };
+type UserRow = { id: string; email: string; role: string };
 
 async function main() {
   const db = createDb(env.databaseUrl);

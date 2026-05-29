@@ -1,7 +1,7 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 
-export type UserRole = 'admin' | 'operator';
+export type UserRole = string;
 
 export type JwtUser = {
   userId: string;
@@ -34,7 +34,7 @@ export function verifyJwt(token: string, secret: string): JwtUser {
   if (typeof userId !== 'string' || typeof email !== 'string') {
     throw new Error('Invalid token');
   }
-  if (role !== 'admin' && role !== 'operator') {
+  if (typeof role !== 'string' || !role.trim()) {
     throw new Error('Invalid token');
   }
 

@@ -10,6 +10,11 @@ type IntegradorResult = {
   error?: string;
 };
 
+type IntegradorExecuteOptions = {
+  dataEmissaoInicio?: string;
+  dataEmissaoFim?: string;
+};
+
 export class IntegradorOperacoesLojaDoPowerStockService {
   private readonly powerStockService: PowerStockGetOperationsService;
   private readonly dispatcherService: DispatcherService;
@@ -25,7 +30,10 @@ export class IntegradorOperacoesLojaDoPowerStockService {
     });
   }
 
-  async execute(triggerType: 'manual' | 'scheduled' = 'manual'): Promise<IntegradorResult> {
+  async execute(
+    triggerType: 'manual' | 'scheduled' = 'manual',
+    options: IntegradorExecuteOptions = {}
+  ): Promise<IntegradorResult> {
     const integradorConfig = await this.repository.getServiceByServiceName('IntegradorOperacoesLojaDoPowerStockService');
     if (!integradorConfig) {
       throw new Error('Service "IntegradorOperacoesLojaDoPowerStockService" não encontrado em api_services.');
@@ -71,12 +79,18 @@ export class IntegradorOperacoesLojaDoPowerStockService {
         : {},
     }, integradorExecutionId);
 
-    let powerStockResult: { success: boolean; error?: string } | null = null;
+    let powerStockResult: { success: boolean; data?: any; error?: string } | null = null;
+    const requestedRange = {
+      dataEmissaoInicio: options.dataEmissaoInicio ?? null,
+      dataEmissaoFim: options.dataEmissaoFim ?? null,
+    };
 
     try {
       powerStockResult = await this.powerStockService.executeService(powerStockConfig.id, {
         batchId,
         executionId: powerStockExecutionId,
+        dataEmissaoInicio: options.dataEmissaoInicio,
+        dataEmissaoFim: options.dataEmissaoFim,
       });
 
       if (!powerStockResult.success) {
@@ -88,14 +102,19 @@ export class IntegradorOperacoesLojaDoPowerStockService {
           'Dispatcher não executado: etapa PowerStock falhou.'
         );
         const errorMessage = powerStockResult.error ?? 'Falha na etapa PowerStockGetOperationsService.';
+        const resolvedRange = {
+          dataEmissaoInicio: (powerStockResult.data?.dataEmissaoInicio as string | undefined) ?? requestedRange.dataEmissaoInicio,
+          dataEmissaoFim: (powerStockResult.data?.dataEmissaoFim as string | undefined) ?? requestedRange.dataEmissaoFim,
+        };
         await this.repository.finishServiceExecution(
           integradorExecutionId,
           'failed',
           new Date(),
-          { powerstock_success: false, dispatcher_executed: false },
+          { ...resolvedRange, powerstock_success: false, dispatcher_executed: false },
           errorMessage
         );
         await this.repository.finishBatch(batchId, 'failed', errorMessage, {
+          ...resolvedRange,
           powerstock_success: false,
           dispatcher_executed: false,
         });
@@ -108,11 +127,17 @@ export class IntegradorOperacoesLojaDoPowerStockService {
         serviceId: dispatcherConfig.id,
       });
 
+      const resolvedRange = {
+        dataEmissaoInicio: (powerStockResult.data?.dataEmissaoInicio as string | undefined) ?? requestedRange.dataEmissaoInicio,
+        dataEmissaoFim: (powerStockResult.data?.dataEmissaoFim as string | undefined) ?? requestedRange.dataEmissaoFim,
+      };
       await this.repository.finishServiceExecution(integradorExecutionId, 'success', new Date(), {
+        ...resolvedRange,
         powerstock_success: true,
         dispatcher_executed: true,
       });
       await this.repository.finishBatch(batchId, 'success', undefined, {
+        ...resolvedRange,
         powerstock_success: true,
         dispatcher_executed: true,
       });
@@ -120,17 +145,23 @@ export class IntegradorOperacoesLojaDoPowerStockService {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const finalStatus = powerStockResult?.success ? 'partial' : 'failed';
+      const resolvedRange = {
+        dataEmissaoInicio: (powerStockResult?.data?.dataEmissaoInicio as string | undefined) ?? requestedRange.dataEmissaoInicio,
+        dataEmissaoFim: (powerStockResult?.data?.dataEmissaoFim as string | undefined) ?? requestedRange.dataEmissaoFim,
+      };
       await this.repository.finishServiceExecution(
         integradorExecutionId,
         finalStatus === 'partial' ? 'success' : 'failed',
         new Date(),
         {
+          ...resolvedRange,
           powerstock_success: Boolean(powerStockResult?.success),
           dispatcher_executed: Boolean(powerStockResult?.success),
         },
         finalStatus === 'partial' ? `Execução parcial: ${message}` : message
       );
       await this.repository.finishBatch(batchId, finalStatus, message, {
+        ...resolvedRange,
         powerstock_success: Boolean(powerStockResult?.success),
         dispatcher_executed: Boolean(powerStockResult?.success),
       });

@@ -5,6 +5,11 @@ import { startBoss } from './boss.js';
 import { env } from './env.js';
 import { runStep1CaptureOrders, runStep2SendOrders } from './job-runners.js';
 import { queueNames, type ExecutionStatus, type ExecutionTrigger, type QueueName } from './types.js';
+import { ApiServiceRepository } from './repositories/ApiServiceRepository.js';
+import { PowerStockGetOperationsService } from './services/PowerStockGetOperationsService.js';
+import { PrismaClient } from '@prisma/client';
+import { DispatcherService } from './services/DispatcherService.js';
+import { IntegradorOperacoesLojaDoPowerStockService } from './services/IntegradorOperacoesLojaDoPowerStockService.js';
 
 type ExecutionRow = {
   id: string;
@@ -56,15 +61,37 @@ type ScheduleData = {
   jobType: QueueName;
 };
 
+type ApiIntegrationServiceScheduleRow = {
+  id: string;
+  api_service_id: string;
+  cron: string;
+  enabled: boolean;
+};
+
+type ApiIntegrationServiceScheduleData = {
+  serviceId: string;
+};
+
+type ApiIntegrationExecuteServiceData = {
+  serviceId: string;
+};
+
 const db = createDb(env.databaseUrl);
+const apiServiceRepository = new ApiServiceRepository(db);
+const powerStockGetOperationsService = new PowerStockGetOperationsService(apiServiceRepository);
 const boss = await startBoss(env.databaseUrl, [
   queueNames.step1CaptureOrders,
   queueNames.step2SendOrders,
   queueNames.notifierDispatch,
+  queueNames.apiIntegrationExecuteService,
 ]);
 
 function scheduleJobName(jobType: QueueName, integrationId: string) {
   return `schedule:${jobType}:${integrationId}`;
+}
+
+function scheduleApiIntegrationServiceJobName(serviceId: string) {
+  return `schedule:${queueNames.apiIntegrationExecuteService}:${serviceId}`;
 }
 
 async function updateExecutionStatus(
@@ -155,6 +182,67 @@ async function handleScheduleFire(data: ScheduleData) {
 
   if (!jobId) {
     throw new Error('Failed to enqueue scheduled job (pg-boss returned null). Check queue creation.');
+  }
+}
+
+async function handleApiIntegrationScheduleFire(data: ApiIntegrationServiceScheduleData) {
+  const serviceId = String(data.serviceId ?? '').trim();
+  if (!serviceId) return;
+  const jobId = await boss.send(queueNames.apiIntegrationExecuteService, { serviceId } satisfies ApiIntegrationExecuteServiceData);
+  if (!jobId) {
+    throw new Error('Failed to enqueue scheduled api-integration service job (pg-boss returned null).');
+  }
+}
+
+async function executeApiIntegrationService(serviceId: string): Promise<void> {
+  const service = await apiServiceRepository.getServiceById(serviceId);
+  if (!service) throw new Error(`api-integration service not found: ${serviceId}`);
+
+  const serviceName = String(service.service_name ?? '').trim();
+  if (serviceName === 'IntegradorOperacoesLojaDoPowerStockService') {
+    const prisma = new PrismaClient();
+    try {
+      const integrador = new IntegradorOperacoesLojaDoPowerStockService(apiServiceRepository, prisma);
+      const res = await integrador.execute('scheduled');
+      if (!res.success) throw new Error(res.error ?? 'Falha ao executar IntegradorOperacoesLojaDoPowerStockService.');
+      return;
+    } finally {
+      await prisma.$disconnect().catch(() => undefined);
+    }
+  }
+
+  if (serviceName === 'PowerStockGetOperationsService') {
+    const res = await powerStockGetOperationsService.executeService(serviceId);
+    if (!res.success) throw new Error(res.error ?? 'Falha ao executar PowerStockGetOperationsService.');
+    return;
+  }
+
+  if (serviceName === 'DispatcherService') {
+    const prisma = new PrismaClient();
+    const dispatcher = new DispatcherService(prisma, { maxConcurrency: 2, maxRetries: 3 });
+    try {
+      await dispatcher.processPendingBatch();
+      return;
+    } finally {
+      await prisma.$disconnect().catch(() => undefined);
+    }
+  }
+
+  throw new Error(`Unsupported api-integration service_name for scheduling: ${serviceName || '(vazio)'}`);
+}
+
+async function handleApiIntegrationExecuteServiceJob(data: ApiIntegrationExecuteServiceData) {
+  const serviceId = String(data.serviceId ?? '').trim();
+  if (!serviceId) return;
+
+  const lock = await tryAcquireLock(queueNames.apiIntegrationExecuteService, serviceId);
+  if (!lock.ok) {
+    return;
+  }
+  try {
+    await executeApiIntegrationService(serviceId);
+  } finally {
+    await releaseLock(lock.key).catch(() => undefined);
   }
 }
 
@@ -257,6 +345,7 @@ async function handleNotifierDispatch(data: NotifierDispatchData) {
 
 async function main() {
   const scheduleRegistry = new Map<string, { scheduleName: string; cron: string }>();
+  const serviceScheduleRegistry = new Map<string, { scheduleName: string; cron: string }>();
 
   async function syncSchedules() {
     const result = await db.query<ScheduleRow>(
@@ -302,6 +391,45 @@ async function main() {
       await boss.offWork(prev.scheduleName).catch(() => undefined);
       scheduleRegistry.delete(id);
     }
+
+    const serviceResult = await db.query<ApiIntegrationServiceScheduleRow>(
+      `select id, api_service_id, cron, enabled
+       from api_integration_service_schedules
+       where enabled = true
+       order by created_at asc`
+    );
+    const serviceActive = new Set<string>();
+    for (const row of serviceResult.rows) {
+      const serviceId = row.api_service_id;
+      const sName = scheduleApiIntegrationServiceJobName(serviceId);
+      serviceActive.add(row.id);
+
+      const prev = serviceScheduleRegistry.get(row.id);
+      if (prev && prev.scheduleName === sName && prev.cron === row.cron) {
+        continue;
+      }
+
+      await boss.createQueue(sName).catch(() => undefined);
+      await boss.unschedule(sName).catch(() => undefined);
+      await boss.schedule(sName, row.cron, { serviceId } satisfies ApiIntegrationServiceScheduleData);
+
+      if (!prev || prev.scheduleName !== sName) {
+        await boss.work<ApiIntegrationServiceScheduleData>(sName, async (jobs) => {
+          for (const job of jobs) {
+            await handleApiIntegrationScheduleFire(job.data);
+          }
+        });
+      }
+
+      serviceScheduleRegistry.set(row.id, { scheduleName: sName, cron: row.cron });
+    }
+
+    for (const [id, prev] of serviceScheduleRegistry.entries()) {
+      if (serviceActive.has(id)) continue;
+      await boss.unschedule(prev.scheduleName).catch(() => undefined);
+      await boss.offWork(prev.scheduleName).catch(() => undefined);
+      serviceScheduleRegistry.delete(id);
+    }
   }
 
   await boss.work<JobData>(queueNames.step1CaptureOrders, async (jobs) => {
@@ -319,6 +447,12 @@ async function main() {
   await boss.work<NotifierDispatchData>(queueNames.notifierDispatch, async (jobs) => {
     for (const job of jobs) {
       await handleNotifierDispatch(job.data);
+    }
+  });
+
+  await boss.work<ApiIntegrationExecuteServiceData>(queueNames.apiIntegrationExecuteService, async (jobs) => {
+    for (const job of jobs) {
+      await handleApiIntegrationExecuteServiceJob(job.data);
     }
   });
 

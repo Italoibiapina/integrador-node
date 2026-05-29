@@ -7,6 +7,7 @@ import { authRequired } from './api.js';
 import { PowerStockGetOperationsService } from './services/PowerStockGetOperationsService.js';
 import { PrismaClient } from '@prisma/client';
 import { DispatcherService } from './services/DispatcherService.js';
+import { IntegradorOperacoesLojaDoPowerStockService } from './services/IntegradorOperacoesLojaDoPowerStockService.js';
 
 export async function apiIntegrationRoutes(fastify: FastifyInstance, options: FastifyPluginOptions) {
   const db = createDb(env.databaseUrl);
@@ -165,18 +166,38 @@ export async function apiIntegrationRoutes(fastify: FastifyInstance, options: Fa
     const dataEmissaoInicio = (body.dataEmissaoInicio ?? query.dataEmissaoInicio) as string | undefined;
     const dataEmissaoFim = (body.dataEmissaoFim ?? query.dataEmissaoFim) as string | undefined;
     try {
-      const result = await powerStockGetOperationsService.executeService(id, {
+      const service = await repository.getServiceById(id);
+      if (!service) {
+        return reply.code(404).send({ ok: false, error: 'Serviço não encontrado' });
+      }
+
+      const serviceName = String(service.service_name ?? '').trim();
+      if (serviceName === 'IntegradorOperacoesLojaDoPowerStockService') {
+        const prisma = new PrismaClient();
+        const integrador = new IntegradorOperacoesLojaDoPowerStockService(repository, prisma);
+        try {
+          const result = await integrador.execute('manual', {
+            dataEmissaoInicio,
+            dataEmissaoFim,
+          });
+          if (!result.success) {
+            return reply.code(500).send({ ok: false, error: result.error ?? 'Falha ao executar integrador', batchId: result.batchId });
+          }
+          return reply.code(201).send({ ok: true, batchId: result.batchId });
+        } finally {
+          await prisma.$disconnect();
+        }
+      }
+
+      const result = await powerStockGetOperationsService.executeService(service.id, {
         dataEmissaoInicio,
         dataEmissaoFim,
       });
       if (!result.success) {
-        return reply.code(500).send({ ok: false, error: result.error ?? 'Falha ao executar serviço' });
+        return reply.code(500).send({ ok: false, error: result.error ?? 'Falha ao executar serviço', batchId: null });
       }
       reply.code(201).send({ ok: true, data: result.data });
     } catch (error: any) {
-      if (error?.message === 'Serviço não encontrado') {
-        return reply.code(404).send({ ok: false, error: error.message });
-      }
       reply.code(500).send({ ok: false, error: error?.message ?? 'Falha ao executar serviço' });
     }
   });
@@ -205,6 +226,104 @@ export async function apiIntegrationRoutes(fastify: FastifyInstance, options: Fa
     }
     const after = await countDispatcherPending();
     reply.code(201).send({ ok: true, pendingBefore: before, pendingAfter: after });
+  });
+
+  // Service Schedules (pg-boss cron) - para serviços do módulo api-integration
+  fastify.get('/service-schedules', async () => {
+    const result = await db.query<{
+      id: string;
+      api_service_id: string;
+      cron: string;
+      enabled: boolean;
+      created_at: string;
+      updated_at: string;
+      service_display_name: string;
+      service_name: string | null;
+    }>(
+      `SELECT
+         s.id,
+         s.api_service_id,
+         s.cron,
+         s.enabled,
+         s.created_at,
+         s.updated_at,
+         svc.name AS service_display_name,
+         svc.service_name
+       FROM api_integration_service_schedules s
+       JOIN api_services svc ON svc.id = s.api_service_id
+       ORDER BY s.created_at DESC`
+    );
+    return result.rows;
+  });
+
+  fastify.post('/service-schedules', async (request, reply) => {
+    const body = (request.body as { serviceId?: string; cron?: string; enabled?: boolean } | undefined) ?? {};
+    const serviceId = String(body.serviceId ?? '').trim();
+    const cron = String(body.cron ?? '').trim();
+    const enabled = body.enabled ?? true;
+    if (!serviceId || !cron) {
+      return reply.code(400).send({ error: 'serviceId e cron são obrigatórios.' });
+    }
+
+    const result = await db.query<{
+      id: string;
+      api_service_id: string;
+      cron: string;
+      enabled: boolean;
+      created_at: string;
+      updated_at: string;
+      service_display_name: string;
+      service_name: string | null;
+    }>(
+      `WITH upserted AS (
+         INSERT INTO api_integration_service_schedules (api_service_id, cron, enabled)
+         VALUES ($1::uuid, $2, $3)
+         ON CONFLICT (api_service_id)
+         DO UPDATE SET cron = EXCLUDED.cron, enabled = EXCLUDED.enabled, updated_at = now()
+         RETURNING *
+       )
+       SELECT
+         u.id,
+         u.api_service_id,
+         u.cron,
+         u.enabled,
+         u.created_at,
+         u.updated_at,
+         svc.name AS service_display_name,
+         svc.service_name
+       FROM upserted u
+       JOIN api_services svc ON svc.id = u.api_service_id`,
+      [serviceId, cron, enabled]
+    );
+    const row = result.rows[0];
+    if (!row) return reply.code(500).send({ error: 'Falha ao salvar agendamento.' });
+    reply.code(201).send(row);
+  });
+
+  fastify.post('/service-schedules/:id/enable', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const result = await db.query<{ id: string }>(
+      `UPDATE api_integration_service_schedules
+       SET enabled = true, updated_at = now()
+       WHERE id = $1::uuid
+       RETURNING id`,
+      [id]
+    );
+    if (!result.rows[0]?.id) return reply.code(404).send({ error: 'Not found' });
+    reply.send({ ok: true });
+  });
+
+  fastify.post('/service-schedules/:id/disable', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const result = await db.query<{ id: string }>(
+      `UPDATE api_integration_service_schedules
+       SET enabled = false, updated_at = now()
+       WHERE id = $1::uuid
+       RETURNING id`,
+      [id]
+    );
+    if (!result.rows[0]?.id) return reply.code(404).send({ error: 'Not found' });
+    reply.send({ ok: true });
   });
 
   // Batches
